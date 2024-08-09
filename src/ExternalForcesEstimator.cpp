@@ -62,6 +62,8 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
     wrench_sub_.maxTime(maxTime_);
   }
 
+  ctl.setWrenches({{"EEForceSensor", sva::ForceVecd::Zero()}});
+
   jac = rbd::Jacobian(robot.mb(), referenceFrame);
   coriolis = new rbd::Coriolis(robot.mb());
   forwardDynamics = rbd::ForwardDynamics(robot.mb());
@@ -78,8 +80,11 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
   filteredExternalTorques = Eigen::VectorXd::Zero(jointNumber);
   externalForces = sva::ForceVecd::Zero();
   externalForcesResidual = sva::ForceVecd::Zero();
+  externalForcesFT = Eigen::Vector6d::Zero();
 
   counter = 0;
+
+  format = Eigen::IOFormat(2, 0, " ", "\n", " ", " ", "[", "]");
 
   // Create datastore's entries to change modify parameters from code
   ctl.controller().datastore().make_call("EF_Estimator::isActive", [this]() { return this->isActive; });
@@ -135,10 +140,19 @@ void ExternalForcesEstimator::before(mc_control::MCGlobalController & controller
 
   auto R = controller.robot().bodyPosW(referenceFrame).rotation();
 
+  // rbd::forwardKinematics(realRobot.mb(), realRobot.mbc());
+  // rbd::forwardVelocity(realRobot.mb(), realRobot.mbc());
+  // rbd::forwardAcceleration(realRobot.mb(), realRobot.mbc());
   forwardDynamics.computeC(realRobot.mb(), realRobot.mbc());
   forwardDynamics.computeH(realRobot.mb(), realRobot.mbc());
   auto coriolisMatrix = coriolis->coriolis(realRobot.mb(), realRobot.mbc());
   auto coriolisGravityTerm = forwardDynamics.C();
+
+  // std::cout << "==================== Coriolis matrix ====================" << std::endl;
+  // std::cout << coriolisMatrix.format(format) << std::endl;
+  // std::cout << "==================== Coriolis Term ====================" << std::endl;
+  // std::cout << coriolisGravityTerm.format(format) << std::endl;
+
   integralTerm += (tau + (coriolisMatrix + coriolisMatrix.transpose()) * qdot - coriolisGravityTerm
                    + virtTorqueSensor->torques() + residual)
                   * ctl.timestep();
@@ -171,9 +185,8 @@ void ExternalForcesEstimator::before(mc_control::MCGlobalController & controller
   FTSensorTorques = jac.jacobian(realRobot.mb(), realRobot.mbc()).transpose() * (externalForces.vector());
   double alpha = 1 - exp(-dt * residualGains);
   filteredFTSensorTorques += alpha * (FTSensorTorques - filteredFTSensorTorques);
-  alpha = 1 - exp(-dt * (double)50.0);
   newExternalTorques = residual + (FTSensorTorques - filteredFTSensorTorques);
-  filteredExternalTorques += alpha * (newExternalTorques - filteredExternalTorques);
+  filteredExternalTorques = newExternalTorques;
 
   filteredFTSensorForces = sva::ForceVecd(jac.jacobian(realRobot.mb(), realRobot.mbc())
                                               .transpose()
@@ -304,8 +317,7 @@ void ExternalForcesEstimator::addGui(mc_control::MCGlobalController & controller
   ctl.controller().gui()->addElement(
       {"Plugins", "External forces estimator"},
       mc_rtc::gui::Force(
-          "EndEffector F/T sensor", fConf,
-          [this]()
+          "EndEffector F/T sensor", fConf, [this]()
           { return sva::ForceVecd(this->externalForcesFT.segment(0, 3), this->externalForcesFT.segment(3, 3)); },
           [this, &controller]()
           {
@@ -340,6 +352,8 @@ void ExternalForcesEstimator::addLog(mc_control::MCGlobalController & controller
                                                [&, this]() { return this->newExternalTorques; });
   controller.controller().logger().addLogEntry("ExternalForceEstimator_torque_value",
                                                [&, this]() { return this->externalTorques; });
+  controller.controller().logger().addLogEntry("ExternalForceEstimator_isActive",
+                                               [&, this]() { return this->isActive; });
 }
 
 void ExternalForcesEstimator::removeLog(mc_control::MCGlobalController & controller)
@@ -353,6 +367,7 @@ void ExternalForcesEstimator::removeLog(mc_control::MCGlobalController & control
   controller.controller().logger().removeLogEntry("ExternalForceEstimator_FTSensor_torque");
   controller.controller().logger().removeLogEntry("ExternalForceEstimator_FTSensor_wrench");
   controller.controller().logger().removeLogEntry("ExternalForceEstimator_torque_value");
+  controller.controller().logger().removeLogEntry("ExternalForceEstimator_isActive");
 }
 
 } // namespace mc_plugin

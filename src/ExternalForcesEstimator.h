@@ -8,6 +8,9 @@
 #include <mc_rtc/log/FlatLog.h>
 
 #include <RBDyn/Coriolis.h>
+#include <RBDyn/FA.h>
+#include <RBDyn/FK.h>
+#include <RBDyn/FV.h>
 #include <RBDyn/MultiBody.h>
 #include <RBDyn/MultiBodyConfig.h>
 
@@ -81,6 +84,8 @@ private:
   double freq_ = 1000;
   std::string force_sensor_topic_ = "/fast_chatter";
   ROSWrenchStampedSubscriber wrench_sub_;
+
+  Eigen::IOFormat format;
 };
 
 } // namespace mc_plugin
