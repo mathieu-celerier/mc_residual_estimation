@@ -78,7 +78,7 @@ private:
   bool use_force_sensor_;
 
   bool ros_force_sensor_;
-  std::shared_ptr<ros::NodeHandle> nh_;
+  std::shared_ptr<rclcpp::Node> node;
   std::thread spinThread_;
   double maxTime_ = 0.001;
   double freq_ = 1000;

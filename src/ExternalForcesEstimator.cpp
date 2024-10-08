@@ -53,12 +53,12 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
   if(ros_force_sensor_)
   {
     // Intializing ROS node
-    nh_ = mc_rtc::ROSBridge::get_node_handle();
+    node = mc_rtc::ROSBridge::get_node_handle();
     spinThread_ = std::thread(std::bind(&ExternalForcesEstimator::rosSpinner, this));
 
     mc_rtc::log::info("[ExternalForcesEstimator][ROS] Subscribing to {}", force_sensor_topic_);
 
-    wrench_sub_.subscribe(*nh_, force_sensor_topic_);
+    wrench_sub_.subscribe(node, force_sensor_topic_);
     wrench_sub_.maxTime(maxTime_);
   }
 
@@ -252,10 +252,10 @@ mc_control::GlobalPlugin::GlobalPluginConfiguration ExternalForcesEstimator::con
 void ExternalForcesEstimator::rosSpinner(void)
 {
   mc_rtc::log::info("[ExternalForcesEstimator][ROS Spinner] thread created for force sensor reading");
-  ros::Rate r(freq_);
-  while(ros::ok())
+  rclcpp::Rate r(freq_);
+  while(rclcpp::ok())
   {
-    ros::spinOnce();
+    rclcpp::spin_some(node);
     r.sleep();
   }
   mc_rtc::log::info("[ExternalForcesEstimator][ROS Spinner] spinner destroyed");

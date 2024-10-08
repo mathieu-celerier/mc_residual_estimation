@@ -12,6 +12,8 @@
 #include <std_msgs/msg/float32_multi_array.hpp>
 #include <std_msgs/msg/float64.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp/subscription.hpp>
+
 // #else
 // // #  include <mc_rtc/ros.h>
 // #  include <geometry_msgs/AccelStamped.h>
@@ -135,30 +137,30 @@ struct ROSSubscriber : public Subscriber<TargetType>
   {
   }
 
-  void subscribe(ros::NodeHandle & nh, const std::string & topic, const unsigned bufferSize = 1)
+  void subscribe(std::shared_ptr<rclcpp::Node> & node, const std::string & topic, const unsigned bufferSize = 1)
   {
-    sub_ = nh.subscribe(topic, bufferSize, &ROSSubscriber::callback, this);
+    sub_ = node->create_subscription<ROSMessageType>(topic, bufferSize, std::bind(&ROSSubscriber::callback, this, std::placeholders::_1));
   }
 
   std::string topic() const
   {
-    return sub_.getTopic();
+    return sub_->get_topic_name();
   }
 
-  const ros::Subscriber & subscriber() const
+  const rclcpp::Subscription<ROSMessageType> & subscriber() const
   {
     return sub_;
   }
 
 protected:
-  void callback(const boost::shared_ptr<ROSMessageType const> & msg)
+  void callback(const std::shared_ptr<const ROSMessageType> & msg)
   {
     this->value(converter_(*msg));
   }
 
 protected:
-  ros::Subscriber sub_;
-  std::function<TargetType(const ROSMessageType &)> converter_;
+    typename rclcpp::Subscription<ROSMessageType>::SharedPtr sub_;
+    std::function<TargetType(const ROSMessageType &)> converter_;
 };
 
 struct ROSPoseStampedSubscriber : public ROSSubscriber<geometry_msgs::msg::PoseStamped, sva::PTransformd>
