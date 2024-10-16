@@ -1,16 +1,17 @@
 #include <mc_rtc/logging.h>
-#include <mc_rtc/ros.h>
-#include <geometry_msgs/AccelStamped.h>
-#include <geometry_msgs/PoseStamped.h>
-#include <geometry_msgs/WrenchStamped.h>
-#include <ros/ros.h>
-#include <sensor_msgs/Joy.h>
-#include <std_msgs/Bool.h>
-#include <std_msgs/Float32MultiArray.h>
-#include <std_msgs/Float64.h>
-#include <memory>
 #include <mutex>
 #include <thread>
+#include <mc_rtc_ros/ros.h>
+
+#include <geometry_msgs/msg/accel_stamped.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/wrench_stamped.hpp>
+#include <sensor_msgs/msg/joy.hpp>
+#include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/float32_multi_array.hpp>
+#include <std_msgs/msg/float64.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp/subscription.hpp>
 
 /**
  * @brief Describes data obtained by a subscriber, along with the time since it
@@ -122,36 +123,36 @@ struct ROSSubscriber : public Subscriber<TargetType>
   {
   }
 
-  void subscribe(std::shared_ptr<ros::NodeHandle> & nh, const std::string & topic, const unsigned bufferSize = 1)
+  void subscribe(std::shared_ptr<rclcpp::Node> & node, const std::string & topic, const unsigned bufferSize = 1)
   {
-    sub_ = nh->subscribe(topic, bufferSize, &ROSSubscriber::callback, this);
+    sub_ = node->create_subscription<ROSMessageType>(topic, bufferSize, std::bind(&ROSSubscriber::callback, this, std::placeholders::_1));
   }
 
   std::string topic() const
   {
-    return sub_.getTopic();
+    return sub_->get_topic_name();
   }
 
-  const ros::Subscriber & subscriber() const
+  const rclcpp::Subscription<ROSMessageType> & subscriber() const
   {
     return sub_;
   }
 
 protected:
-  void callback(const boost::shared_ptr<ROSMessageType const> & msg)
+  void callback(const std::shared_ptr<const ROSMessageType> & msg)
   {
     this->value(converter_(*msg));
   }
 
 protected:
-  ros::Subscriber sub_;
-  std::function<TargetType(const ROSMessageType &)> converter_;
+    typename rclcpp::Subscription<ROSMessageType>::SharedPtr sub_;
+    std::function<TargetType(const ROSMessageType &)> converter_;
 };
 
-struct ROSPoseStampedSubscriber : public ROSSubscriber<geometry_msgs::PoseStamped, sva::PTransformd>
+struct ROSPoseStampedSubscriber : public ROSSubscriber<geometry_msgs::msg::PoseStamped, sva::PTransformd>
 {
   ROSPoseStampedSubscriber()
-  : ROSSubscriber([](const geometry_msgs::PoseStamped & msg) {
+  : ROSSubscriber([](const geometry_msgs::msg::PoseStamped & msg) {
       const auto & t = msg.pose.position;
       const auto & r = msg.pose.orientation;
       auto pose = sva::PTransformd(Eigen::Quaterniond{r.w, r.x, r.y, r.z}.inverse(), Eigen::Vector3d{t.x, t.y, t.z});
@@ -161,10 +162,10 @@ struct ROSPoseStampedSubscriber : public ROSSubscriber<geometry_msgs::PoseStampe
   }
 };
 
-struct ROSAccelStampedSubscriber : public ROSSubscriber<geometry_msgs::AccelStamped, sva::MotionVecd>
+struct ROSAccelStampedSubscriber : public ROSSubscriber<geometry_msgs::msg::AccelStamped, sva::MotionVecd>
 {
   ROSAccelStampedSubscriber()
-  : ROSSubscriber([](const geometry_msgs::AccelStamped & msg) {
+  : ROSSubscriber([](const geometry_msgs::msg::AccelStamped & msg) {
       const auto & a = msg.accel.linear;
       const auto & w = msg.accel.angular;
       auto acc = sva::MotionVecd(Eigen::Vector3d{w.x, w.y, w.z}, Eigen::Vector3d{a.x, a.y, a.z});
@@ -174,10 +175,10 @@ struct ROSAccelStampedSubscriber : public ROSSubscriber<geometry_msgs::AccelStam
   }
 };
 
-struct ROSWrenchStampedSubscriber : public ROSSubscriber<geometry_msgs::WrenchStamped, sva::ForceVecd>
+struct ROSWrenchStampedSubscriber : public ROSSubscriber<geometry_msgs::msg::WrenchStamped, sva::ForceVecd>
 {
   ROSWrenchStampedSubscriber()
-  : ROSSubscriber([](const geometry_msgs::WrenchStamped & msg) {
+  : ROSSubscriber([](const geometry_msgs::msg::WrenchStamped & msg) {
       // mc_rtc::log::info("Timedelta = {}", ros::Time::now()-msg.header.stamp);
       const auto & f = msg.wrench.force;
       const auto & m = msg.wrench.torque;
@@ -188,17 +189,17 @@ struct ROSWrenchStampedSubscriber : public ROSSubscriber<geometry_msgs::WrenchSt
   }
 };
 
-struct ROSBoolSubscriber : public ROSSubscriber<std_msgs::Bool, bool>
+struct ROSBoolSubscriber : public ROSSubscriber<std_msgs::msg::Bool, bool>
 {
-  ROSBoolSubscriber() : ROSSubscriber([](const std_msgs::Bool & msg) { return msg.data; }) {}
+  ROSBoolSubscriber() : ROSSubscriber([](const std_msgs::msg::Bool & msg) { return msg.data; }) {}
 };
 
-struct ROSMultiArraySubscriber : public ROSSubscriber<std_msgs::Float32MultiArray, std::vector<float>>
+struct ROSMultiArraySubscriber : public ROSSubscriber<std_msgs::msg::Float32MultiArray, std::vector<float>>
 {
-  ROSMultiArraySubscriber() : ROSSubscriber([](const std_msgs::Float32MultiArray & msg) { return msg.data; }) {}
+  ROSMultiArraySubscriber() : ROSSubscriber([](const std_msgs::msg::Float32MultiArray & msg) { return msg.data; }) {}
 };
 
-struct ROSFloatSubscriber : public ROSSubscriber<std_msgs::Float64, double>
+struct ROSFloatSubscriber : public ROSSubscriber<std_msgs::msg::Float64, double>
 {
-  ROSFloatSubscriber() : ROSSubscriber([](const std_msgs::Float64 & msg) { return msg.data; }) {}
+  ROSFloatSubscriber() : ROSSubscriber([](const std_msgs::msg::Float64 & msg) { return msg.data; }) {}
 };

@@ -13,16 +13,30 @@ if(NOT TARGET mc_rtc::mc_control)
   find_package(mc_rtc REQUIRED)
 endif()
 
-# To use ros
-find_package(ament_cmake REQUIRED)
-find_package(rclcpp REQUIRED)
-find_package(geometry_msgs REQUIRED)
-find_package(std_msgs REQUIRED)
+if(NOT DEFINED ENV{ROS_VERSION})
+  message(FATAL_ERROR "ROS_VERSION is not set in the environment")
+endif()
+if($ENV{ROS_VERSION} EQUAL 1)
+  set(ROS_VERSION 1)
+  find_package(catkin REQUIRED COMPONENTS roscpp)
+  catkin_package(CATKIN_DEPENDS geometry_msgs roscpp roslib std_msgs)
+  message("=========== Catkin include directories : ${catkin_INCLUDE_DIRS}")
+  include_directories(include ${catkin_INCLUDE_DIRS} $ENV{HOME}/.local/include)
+  link_directories(${catkin_LIBRARY_DIRS} $ENV{HOME}/.local/lib)
 
-ament_package()
-message("=========== Catkin include directories : ${catkin_INCLUDE_DIRS}")
-include_directories(include ${catkin_INCLUDE_DIRS} $ENV{HOME}/.local/include)
-link_directories(${catkin_LIBRARY_DIRS} $ENV{HOME}/.local/lib)
+  set(plugin_HDR include/utils/ROSSubscriber.h)
+elseif($ENV{ROS_VERSION} EQUAL 2)
+  set(ROS_VERSION 2)
+  find_package(ament_cmake REQUIRED)
+  find_package(rclcpp REQUIRED)
+  find_package(geometry_msgs REQUIRED)
+  find_package(std_msgs REQUIRED)
+  ament_package()
+
+  set(plugin_HDR include/utils/ROS2Subscriber.h)
+else()
+  message(FATAL_ERROR "Unknown ROS version: $ENV{ROS_VERSION}")
+endif()
 
 # Configure and install the plugin configuration
 configure_file(etc/ExternalForcesEstimator.in.yaml
@@ -31,11 +45,10 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/etc/ExternalForcesEstimator.yaml"
         DESTINATION "${MC_PLUGINS_RUNTIME_INSTALL_PREFIX}/etc")
 
 set(plugin_SRC src/ExternalForcesEstimator.cpp)
-
-set(plugin_HDR src/ExternalForcesEstimator.h include/utils/ROSSubscriber.h)
+set(plugin_HDR ${plugin_HDR} src/ExternalForcesEstimator.h)
 
 # The add_plugin macro is provided by mc_rtc
-add_plugin(ExternalForcesEstimator "${plugin_SRC}" "${plugin_HDR}")
+add_plugin(ExternalForcesEstimator ${plugin_SRC} ${plugin_HDR})
 target_link_libraries(ExternalForcesEstimator PUBLIC mc_rtc::mc_rtc_ros)
 
 # if(BUILD_TESTING) add_subdirectory(tests) endif()

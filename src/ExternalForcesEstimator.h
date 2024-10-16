@@ -17,8 +17,11 @@
 #include <mc_rbdyn/ExternalTorqueSensor.h>
 #include <mc_rbdyn/VirtualTorqueSensor.h>
 
-#include "utils/ROSSubscriber.h"
-
+#ifdef MC_RTC_ROS_IS_ROS2
+  #include "utils/ROS2Subscriber.h"
+#else
+  #include "utils/ROSSubscriber.h"
+#endif
 namespace mc_plugin
 {
 
@@ -78,7 +81,11 @@ private:
   bool use_force_sensor_;
 
   bool ros_force_sensor_;
-  std::shared_ptr<rclcpp::Node> node;
+  #ifdef MC_RTC_ROS_IS_ROS2
+    std::shared_ptr<rclcpp::Node> nh_;
+  #else
+    std::shared_ptr<ros::NodeHandle> nh_;
+  #endif
   std::thread spinThread_;
   double maxTime_ = 0.001;
   double freq_ = 1000;
