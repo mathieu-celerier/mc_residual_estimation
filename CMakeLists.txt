@@ -50,7 +50,7 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/etc/ExternalForcesEstimator.yaml"
         DESTINATION "${MC_PLUGINS_RUNTIME_INSTALL_PREFIX}/etc")
 
 set(plugin_SRC src/ExternalForcesEstimator.cpp)
-set(plugin_HDR ${plugin_HDR} src/ExternalForcesEstimator.h)
+set(plugin_HDR src/ExternalForcesEstimator.h ${plugin_HDR})
 
 # The add_plugin macro is provided by mc_rtc
 add_plugin(ExternalForcesEstimator ${plugin_SRC} ${plugin_HDR})
