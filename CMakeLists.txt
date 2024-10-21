@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.1)
 
 project(
-  ExternalForcesEstimator
+  external_forces_estimator
   LANGUAGES CXX
   VERSION 1.0.0)
 
