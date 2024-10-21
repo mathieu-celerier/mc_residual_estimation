@@ -41,7 +41,7 @@ elseif($ENV{ROS_VERSION} EQUAL 2)
   find_package(std_msgs REQUIRED)
   ament_package()
 
-  list(APPEND plugin_HDR include/utils/ROS2Subscriber.h)
+  list(APPEND plugin_HDR "include/utils/ROS2Subscriber.h")
 else()
   message(FATAL_ERROR "Unknown ROS version: $ENV{ROS_VERSION}")
 endif()
@@ -53,7 +53,7 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/etc/ExternalForcesEstimator.yaml"
         DESTINATION "${MC_PLUGINS_RUNTIME_INSTALL_PREFIX}/etc")
 
 set(plugin_SRC src/ExternalForcesEstimator.cpp)
-list(APPEND plugin_HDR src/ExternalForcesEstimator.h)
+list(APPEND plugin_HDR "src/ExternalForcesEstimator.h")
 
 # The add_plugin macro is provided by mc_rtc
 add_plugin(ExternalForcesEstimator ${plugin_SRC} ${plugin_HDR})
