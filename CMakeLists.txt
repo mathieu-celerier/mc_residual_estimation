@@ -9,8 +9,13 @@ include(CTest)
 enable_testing()
 
 # Find mc_rtc if we are not building inside mc_rtc itself
+find_package(mc_rtc REQUIRED)
 if(NOT TARGET mc_rtc::mc_control)
-  find_package(mc_rtc REQUIRED)
+  message(FATAL_ERROR "mc_rtc::mc_control is required to build this project")
+endif() 
+
+if(NOT TARGET mc_rtc::mc_rtc_ros)
+  message(FATAL_ERROR "mc_rtc ROS plugin is required to build this project")
 endif()
 
 if(NOT DEFINED ENV{ROS_VERSION})
