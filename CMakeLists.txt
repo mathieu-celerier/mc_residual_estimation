@@ -41,6 +41,7 @@ elseif($ENV{ROS_VERSION} EQUAL 2)
   find_package(std_msgs REQUIRED)
   ament_package()
 
+  include_directories(include)
   list(APPEND plugin_HDR "include/utils/ROS2Subscriber.h")
 else()
   message(FATAL_ERROR "Unknown ROS version: $ENV{ROS_VERSION}")

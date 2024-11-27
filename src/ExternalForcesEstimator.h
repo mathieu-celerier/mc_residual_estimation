@@ -19,8 +19,10 @@
 
 #ifdef MC_RTC_ROS_IS_ROS2
   #include "utils/ROS2Subscriber.h"
+  #pragma message("Using ROS2Subscriber.h")
 #else
   #include "utils/ROSSubscriber.h"
+  #pragma message("Using ROSSubscriber.h")
 #endif
 namespace mc_plugin
 {
