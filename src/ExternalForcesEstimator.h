@@ -89,8 +89,8 @@ private:
     std::shared_ptr<ros::NodeHandle> nh_;
   #endif
   std::thread spinThread_;
-  double maxTime_ = 0.001;
-  double freq_ = 1000;
+  double maxTime_; 
+  double freq_;
   std::string force_sensor_topic_ = "/fast_chatter";
   ROSWrenchStampedSubscriber wrench_sub_;
 

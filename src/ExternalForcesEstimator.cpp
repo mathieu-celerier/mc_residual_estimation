@@ -53,8 +53,10 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
   use_force_sensor_ = config("use_force_sensor", false);
   ros_force_sensor_ = config("ros_force_sensor", false);
   force_sensor_topic_ = config("ros_topic_sensor", (std::string) "");
+  freq_ = config("ft_freq", (double) 1000);
   // config loaded
 
+  maxTime_ = 1/freq_;
   if(ros_force_sensor_)
   {
     // Intializing ROS node
