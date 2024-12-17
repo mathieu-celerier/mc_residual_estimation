@@ -76,6 +76,7 @@ private:
 
   // Force sensor
   bool use_force_sensor_;
+  bool use_cmd_torque_;
 
   bool ros_force_sensor_;
   std::shared_ptr<ros::NodeHandle> nh_;

@@ -47,6 +47,7 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
   verbose = config("verbose", false);
   use_force_sensor_ = config("use_force_sensor", false);
   ros_force_sensor_ = config("ros_force_sensor", false);
+  use_cmd_torque_ = config("use_commanded_torque", false);
   force_sensor_topic_ = config("ros_topic_sensor", (std::string) "");
   // config loaded
 
@@ -127,15 +128,20 @@ void ExternalForcesEstimator::before(mc_control::MCGlobalController & controller
   //   wrench_sub_.data().value().couple().transpose()
   // );
 
+  auto & robot = ctl.robot();
   auto & realRobot = ctl.realRobot(ctl.robots()[0].name());
 
   auto & rjo = realRobot.refJointOrder();
 
   Eigen::VectorXd qdot(jointNumber), tau(jointNumber);
-  for(size_t i = 0; i < jointNumber; i++)
+  rbd::paramToVector(realRobot.alpha(), qdot);
+  if(use_cmd_torque_)
   {
-    qdot[i] = realRobot.alpha()[realRobot.jointIndexByName(rjo[i])][0];
-    tau[i] = realRobot.jointTorques()[i];
+    rbd::paramToVector(robot.jointTorque(), tau);
+  }
+  else
+  {
+    tau = Eigen::VectorXd::Map(realRobot.jointTorques().data(), realRobot.jointTorques().size());
   }
 
   auto R = controller.robot().bodyPosW(referenceFrame).rotation();
@@ -266,15 +272,10 @@ void ExternalForcesEstimator::addGui(mc_control::MCGlobalController & controller
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
 
   ctl.controller().gui()->addElement({"Plugins", "External forces estimator"},
-                                     mc_rtc::gui::Checkbox("Is estimation feedback active", isActive));
-
-  ctl.controller().gui()->addElement({"Plugins", "External forces estimator"},
-                                     mc_rtc::gui::Checkbox("Use force sensor", use_force_sensor_));
-
-  ctl.controller().gui()->addElement({"Plugins", "External forces estimator"},
-                                     mc_rtc::gui::Checkbox("Use force sensor over ROS", ros_force_sensor_));
-
-  ctl.controller().gui()->addElement({"Plugins", "External forces estimator"},
+                                     mc_rtc::gui::Checkbox("Is estimation feedback active", isActive),
+                                     mc_rtc::gui::Checkbox("Use force sensor", use_force_sensor_),
+                                     mc_rtc::gui::Checkbox("Use force sensor over ROS", ros_force_sensor_),
+                                     mc_rtc::gui::Checkbox("Use commanded torque", use_cmd_torque_),
                                      mc_rtc::gui::NumberInput(
                                          "Gain", [this]() { return this->residualGains; },
                                          [this](double gain)
