@@ -70,7 +70,7 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
   forwardDynamics = rbd::ForwardDynamics(robot.mb());
 
   forwardDynamics.computeH(robot.mb(), robot.mbc());
-  auto inertiaMatrix = forwardDynamics.H();
+  auto inertiaMatrix = forwardDynamics.H() - forwardDynamics.HIr();
   pzero = inertiaMatrix * qdot;
 
   integralTerm = Eigen::VectorXd::Zero(jointNumber);
@@ -111,6 +111,8 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
 void ExternalForcesEstimator::reset(mc_control::MCGlobalController & controller)
 {
   removeLog(controller);
+  stop_thread = true;
+  spinThread_.join();
   mc_rtc::log::info("[ExternalForcesEstimator][Reset] called");
 }
 
@@ -162,7 +164,7 @@ void ExternalForcesEstimator::before(mc_control::MCGlobalController & controller
   integralTerm += (tau + (coriolisMatrix + coriolisMatrix.transpose()) * qdot - coriolisGravityTerm
                    + virtTorqueSensor->torques() + residual)
                   * ctl.timestep();
-  auto inertiaMatrix = forwardDynamics.H();
+  auto inertiaMatrix = forwardDynamics.H() - forwardDynamics.HIr();
   auto pt = inertiaMatrix * qdot;
 
   residual = residualGains * (pt - integralTerm + pzero);
@@ -259,7 +261,7 @@ void ExternalForcesEstimator::rosSpinner(void)
 {
   mc_rtc::log::info("[ExternalForcesEstimator][ROS Spinner] thread created for force sensor reading");
   ros::Rate r(freq_);
-  while(ros::ok())
+  while(ros::ok() and !stop_thread)
   {
     ros::spinOnce();
     r.sleep();
@@ -284,6 +286,7 @@ void ExternalForcesEstimator::addGui(mc_control::MCGlobalController & controller
                                            {
                                              integralTerm.setZero();
                                              residual.setZero();
+                                             filteredFTSensorTorques.setZero();
                                            }
                                            residualGains = gain;
                                          }));

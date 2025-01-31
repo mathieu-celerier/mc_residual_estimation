@@ -81,6 +81,7 @@ private:
   bool ros_force_sensor_;
   std::shared_ptr<ros::NodeHandle> nh_;
   std::thread spinThread_;
+  bool stop_thread = false;
   double maxTime_ = 0.001;
   double freq_ = 1000;
   std::string force_sensor_topic_ = "/fast_chatter";
