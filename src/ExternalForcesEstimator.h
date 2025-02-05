@@ -81,6 +81,7 @@ private:
 
   // Force sensor
   bool use_force_sensor_;
+  bool use_cmd_torque_;
 
   bool ros_force_sensor_;
   #ifdef MC_RTC_ROS_IS_ROS2
@@ -89,6 +90,7 @@ private:
     std::shared_ptr<ros::NodeHandle> nh_;
   #endif
   std::thread spinThread_;
+  bool stop_thread = false;
   double maxTime_; 
   double freq_;
   std::string force_sensor_topic_ = "/fast_chatter";

@@ -52,6 +52,7 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
   verbose = config("verbose", false);
   use_force_sensor_ = config("use_force_sensor", false);
   ros_force_sensor_ = config("ros_force_sensor", false);
+  use_cmd_torque_ = config("use_commanded_torque", false);
   force_sensor_topic_ = config("ros_topic_sensor", (std::string) "");
   freq_ = config("ft_freq", (double) 1000);
   // config loaded
@@ -80,7 +81,7 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
   forwardDynamics = rbd::ForwardDynamics(robot.mb());
 
   forwardDynamics.computeH(robot.mb(), robot.mbc());
-  auto inertiaMatrix = forwardDynamics.H();
+  auto inertiaMatrix = forwardDynamics.H() - forwardDynamics.HIr();
   pzero = inertiaMatrix * qdot;
 
   integralTerm = Eigen::VectorXd::Zero(jointNumber);
@@ -121,6 +122,8 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
 void ExternalForcesEstimator::reset(mc_control::MCGlobalController & controller)
 {
   removeLog(controller);
+  stop_thread = true;
+  spinThread_.join();
   mc_rtc::log::info("[ExternalForcesEstimator][Reset] called");
 }
 
@@ -138,15 +141,20 @@ void ExternalForcesEstimator::before(mc_control::MCGlobalController & controller
   //   wrench_sub_.data().value().couple().transpose()
   // );
 
+  auto & robot = ctl.robot();
   auto & realRobot = ctl.realRobot(ctl.robots()[0].name());
 
   auto & rjo = realRobot.refJointOrder();
 
   Eigen::VectorXd qdot(jointNumber), tau(jointNumber);
-  for(size_t i = 0; i < jointNumber; i++)
+  rbd::paramToVector(realRobot.alpha(), qdot);
+  if(use_cmd_torque_)
   {
-    qdot[i] = realRobot.alpha()[realRobot.jointIndexByName(rjo[i])][0];
-    tau[i] = realRobot.jointTorques()[i];
+    rbd::paramToVector(robot.jointTorque(), tau);
+  }
+  else
+  {
+    tau = Eigen::VectorXd::Map(realRobot.jointTorques().data(), realRobot.jointTorques().size());
   }
 
   auto R = controller.robot().bodyPosW(referenceFrame).rotation();
@@ -167,7 +175,7 @@ void ExternalForcesEstimator::before(mc_control::MCGlobalController & controller
   integralTerm += (tau + (coriolisMatrix + coriolisMatrix.transpose()) * qdot - coriolisGravityTerm
                    + virtTorqueSensor->torques() + residual)
                   * ctl.timestep();
-  auto inertiaMatrix = forwardDynamics.H();
+  auto inertiaMatrix = forwardDynamics.H() - forwardDynamics.HIr();
   auto pt = inertiaMatrix * qdot;
 
   residual = residualGains * (pt - integralTerm + pzero);
@@ -265,14 +273,14 @@ void ExternalForcesEstimator::rosSpinner(void)
   mc_rtc::log::info("[ExternalForcesEstimator][ROS Spinner] thread created for force sensor reading");
   #ifdef MC_RTC_ROS_IS_ROS2
     rclcpp::Rate r(freq_);
-    while(rclcpp::ok())
+    while(rclcpp::ok()and !stop_thread)
     {
       rclcpp::spin_some(nh_);
       r.sleep();
     }
   #else
     ros::Rate r(freq_);
-    while(ros::ok())
+    while(ros::ok()and !stop_thread)
     {
       ros::spinOnce();
       r.sleep();
@@ -286,15 +294,10 @@ void ExternalForcesEstimator::addGui(mc_control::MCGlobalController & controller
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
 
   ctl.controller().gui()->addElement({"Plugins", "External forces estimator"},
-                                     mc_rtc::gui::Checkbox("Is estimation feedback active", isActive));
-
-  ctl.controller().gui()->addElement({"Plugins", "External forces estimator"},
-                                     mc_rtc::gui::Checkbox("Use force sensor", use_force_sensor_));
-
-  ctl.controller().gui()->addElement({"Plugins", "External forces estimator"},
-                                     mc_rtc::gui::Checkbox("Use force sensor over ROS", ros_force_sensor_));
-
-  ctl.controller().gui()->addElement({"Plugins", "External forces estimator"},
+                                     mc_rtc::gui::Checkbox("Is estimation feedback active", isActive),
+                                     mc_rtc::gui::Checkbox("Use force sensor", use_force_sensor_),
+                                     mc_rtc::gui::Checkbox("Use force sensor over ROS", ros_force_sensor_),
+                                     mc_rtc::gui::Checkbox("Use commanded torque", use_cmd_torque_),
                                      mc_rtc::gui::NumberInput(
                                          "Gain", [this]() { return this->residualGains; },
                                          [this](double gain)
@@ -303,6 +306,7 @@ void ExternalForcesEstimator::addGui(mc_control::MCGlobalController & controller
                                            {
                                              integralTerm.setZero();
                                              residual.setZero();
+                                             filteredFTSensorTorques.setZero();
                                            }
                                            residualGains = gain;
                                          }));
