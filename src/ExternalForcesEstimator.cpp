@@ -113,6 +113,8 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
 void ExternalForcesEstimator::reset(mc_control::MCGlobalController & controller)
 {
   removeLog(controller);
+  stop_thread = true;
+  spinThread_.join();
   mc_rtc::log::info("[ExternalForcesEstimator][Reset] called");
 }
 
