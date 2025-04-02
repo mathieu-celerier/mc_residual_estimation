@@ -17,8 +17,6 @@
 #include <mc_rbdyn/ExternalTorqueSensor.h>
 #include <mc_rbdyn/VirtualTorqueSensor.h>
 
-#include "utils/ROSSubscriber.h"
-
 namespace mc_plugin
 {
 
@@ -35,8 +33,6 @@ struct ExternalForcesEstimator : public mc_control::GlobalPlugin
   mc_control::GlobalPlugin::GlobalPluginConfiguration configuration() override;
 
   ~ExternalForcesEstimator() override;
-
-  void rosSpinner(void);
 
   void addGui(mc_control::MCGlobalController & controller);
   void addLog(mc_control::MCGlobalController & controller);
@@ -60,6 +56,9 @@ private:
 
   Eigen::VectorXd integralTerm;
   Eigen::VectorXd residual;
+  Eigen::VectorXd residualWithRotorInertia;
+  Eigen::VectorXd integralTermWithRotorInertia;
+
   Eigen::VectorXd FTSensorTorques;
   Eigen::VectorXd prevFTSensorTorques;
   Eigen::VectorXd filteredFTSensorTorques;
@@ -74,19 +73,16 @@ private:
   mc_rbdyn::ExternalTorqueSensor * extTorqueSensor;
   mc_rbdyn::VirtualTorqueSensor * virtTorqueSensor;
 
+  //Used for collision avoidance observer, not for the control
+  Eigen::VectorXd residualSpeed;
+  Eigen::VectorXd integralTermSpeed;
+  double residualSpeedGain;
+
   // Force sensor
   bool use_force_sensor_;
   bool use_cmd_torque_;
 
   bool ros_force_sensor_;
-  std::shared_ptr<ros::NodeHandle> nh_;
-  std::thread spinThread_;
-  bool stop_thread = false;
-  double maxTime_ = 0.001;
-  double freq_ = 1000;
-  std::string force_sensor_topic_ = "/fast_chatter";
-  ROSWrenchStampedSubscriber wrench_sub_;
-
   Eigen::IOFormat format;
 };
 
