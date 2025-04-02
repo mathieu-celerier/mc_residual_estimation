@@ -1,5 +1,5 @@
 residual_gain: 10
+residual_speed_gain: 100
 reference_frame: FT_frame
 use_force_sensor: true
 ros_force_sensor: false
-ros_topic_sensor: /fast_chatter
