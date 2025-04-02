@@ -20,10 +20,11 @@ This approach improves the accuracy of external force estimation by combining mu
 - [mc_ros_force_sensor](https://github.com/bastien-muraccioli/mc_ros_force_sensor) (only required if the F/T sensor communicates via ROS1/2)
 
 ## Installation
+It is recommended to use [https://github.com/mc-rtc/mc-rtc-superbuild] to install the plugin. However, you can install it as a standalone, like the following.
 Ensure you have `mc_rtc` installed on your system. If your F/T sensor requires ROS, install `mc_ros_force_sensor` as well. Then, clone and build the plugin:
 
 ```sh
-cd ~/catkin_ws/src  # Or any preferred workspace
+cd ~/workspace/src  # Or any preferred workspace
 git clone https://github.com/bastien-muraccioli/mc_residual_estimation
 cd mc_residual_estimation
 mkdir build && cd build
