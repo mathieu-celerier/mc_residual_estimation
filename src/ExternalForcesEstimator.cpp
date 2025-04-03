@@ -22,7 +22,7 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
 
   if(!ctl.controller().datastore().has("extTorquePlugin"))
   {
-     ctl.controller().datastore().make_initializer<std::vector<std::string>>("extTorquePlugin", "");
+    ctl.controller().datastore().make_initializer<std::vector<std::string>>("extTorquePlugin", "");
   }
 
   if(!robot.hasDevice<mc_rbdyn::ExternalTorqueSensor>("externalTorqueSensor"))
@@ -101,15 +101,13 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
 
   addGui(controller);
   addLog(controller);
-  
+
   mc_rtc::log::info("[ExternalForcesEstimator][Init] called with configuration:\n{}", config.dump(true, true));
 }
 
 void ExternalForcesEstimator::reset(mc_control::MCGlobalController & controller)
 {
   removeLog(controller);
-  stop_thread = true;
-  spinThread_.join();
   mc_rtc::log::info("[ExternalForcesEstimator][Reset] called");
 }
 
@@ -169,13 +167,14 @@ void ExternalForcesEstimator::before(mc_control::MCGlobalController & controller
   auto inertiaMatrixWithRotorInertia = forwardDynamics.H();
   auto ptWithRotorInertia = inertiaMatrixWithRotorInertia * qdot;
   integralTermWithRotorInertia += (tau + (coriolisMatrix + coriolisMatrix.transpose()) * qdot - coriolisGravityTerm
-                   + virtTorqueSensor->torques() + residualWithRotorInertia)
-                  * ctl.timestep();
+                                   + virtTorqueSensor->torques() + residualWithRotorInertia)
+                                  * ctl.timestep();
   residualWithRotorInertia = residualGains * (ptWithRotorInertia - integralTermWithRotorInertia + pzero);
-  
+
   // Residual speed observer
-  integralTermSpeed += (tau + (coriolisMatrix + coriolisMatrix.transpose()) * qdot - coriolisGravityTerm
-                    + residualSpeed) * ctl.timestep();
+  integralTermSpeed +=
+      (tau + (coriolisMatrix + coriolisMatrix.transpose()) * qdot - coriolisGravityTerm + residualSpeed)
+      * ctl.timestep();
   residualSpeed = residualSpeedGain * (pt - integralTermSpeed + pzero);
   if(!ctl.controller().datastore().has("speed_residual"))
   {
@@ -185,7 +184,7 @@ void ExternalForcesEstimator::before(mc_control::MCGlobalController & controller
   {
     ctl.controller().datastore().assign("speed_residual", residualSpeed);
   }
-  
+
   auto jTranspose = jac.jacobian(realRobot.mb(), realRobot.mbc());
   jTranspose.transposeInPlace();
   Eigen::VectorXd FR = jTranspose.completeOrthogonalDecomposition().solve(residual);
@@ -238,8 +237,8 @@ void ExternalForcesEstimator::before(mc_control::MCGlobalController & controller
 
   counter++;
 
-
-  std::vector<std::string> & extTorquePlugin = ctl.controller().datastore().get<std::vector<std::string>>("extTorquePlugin");
+  std::vector<std::string> & extTorquePlugin =
+      ctl.controller().datastore().get<std::vector<std::string>>("extTorquePlugin");
 
   if(isActive)
   {
@@ -247,9 +246,9 @@ void ExternalForcesEstimator::before(mc_control::MCGlobalController & controller
   }
   else
   {
-    extTorquePlugin.erase(std::remove(extTorquePlugin.begin(), extTorquePlugin.end(), "ResidualEstimator"), extTorquePlugin.end());
+    extTorquePlugin.erase(std::remove(extTorquePlugin.begin(), extTorquePlugin.end(), "ResidualEstimator"),
+                          extTorquePlugin.end());
   }
-  
 
   // bool anotherPluginIsActive = false;
   bool onePluginIsActive = false;
@@ -261,12 +260,14 @@ void ExternalForcesEstimator::before(mc_control::MCGlobalController & controller
       if(pluginName != "ResidualEstimator")
       {
         // anotherPluginIsActive = true;
-        if (verbose) mc_rtc::log::info("[ExternalForcesEstimator] Another plugin is active: {}, the last plugin sets the external torques.", pluginName);
+        if(verbose)
+          mc_rtc::log::info(
+              "[ExternalForcesEstimator] Another plugin is active: {}, the last plugin sets the external torques.",
+              pluginName);
         break;
       }
     }
   }
-  
 
   if(isActive)
   {
@@ -279,8 +280,6 @@ void ExternalForcesEstimator::before(mc_control::MCGlobalController & controller
     extTorqueSensor->torques(zero);
     if(counter == 1) mc_rtc::log::warning("External force feedback inactive");
   }
-
-  
 
   // mc_rtc::log::info("ExternalForcesEstimator::before");
 }
@@ -320,7 +319,7 @@ void ExternalForcesEstimator::addGui(mc_control::MCGlobalController & controller
                                            }
                                            residualGains = gain;
                                          }),
-                                      mc_rtc::gui::NumberInput(
+                                     mc_rtc::gui::NumberInput(
                                          "Residual speed gain", [this]() { return this->residualSpeedGain; },
                                          [this](double gainSpeed)
                                          {
@@ -331,7 +330,6 @@ void ExternalForcesEstimator::addGui(mc_control::MCGlobalController & controller
                                            }
                                            residualSpeedGain = gainSpeed;
                                          }));
-
 
   auto fConf = mc_rtc::gui::ForceConfig();
   // fConf.color = mc_rtc::gui::Color::Blue;
