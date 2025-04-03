@@ -60,4 +60,3 @@ The plugin can be used with different robots and F/T sensors as long as:
 - The F/T sensor can be integrated into `mc_rtc`
 
 For new robot models, modify the configuration files to reflect the correct sensor names and kinematic parameters.
-

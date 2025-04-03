@@ -20,11 +20,6 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
 
   jointNumber = ctl.robot(ctl.robots()[0].name()).refJointOrder().size();
 
-  if(!ctl.controller().datastore().has("ros_spin"))
-  {
-     ctl.controller().datastore().make<bool>("ros_spin", false);
-  }
-
   if(!ctl.controller().datastore().has("extTorquePlugin"))
   {
      ctl.controller().datastore().make_initializer<std::vector<std::string>>("extTorquePlugin", "");
