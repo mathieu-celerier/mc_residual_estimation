@@ -17,7 +17,7 @@ This approach improves the accuracy of external force estimation by combining mu
 
 ## Requirements
 - [mc_rtc](https://github.com/jrl-umi3218/mc_rtc): A modular framework for real-time robot control
-- [mc_ros_force_sensor](https://github.com/bastien-muraccioli/mc_ros_force_sensor) (only required if the F/T sensor communicates via ROS1/2)
+- [mc_ros_force_sensor](https://github.com/mathieu-celerier/mc_ros_force_sensor) (only required if the F/T sensor communicates via ROS1/2)
 
 ## Installation
 It is recommended to use [mc_rtc superbuild](https://github.com/mc-rtc/mc-rtc-superbuild) to install the plugin. However, you can install it as a standalone, like the following.
