@@ -76,11 +76,12 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
   residualSpeedGain = config("residual_speed_gain", 100.0);
   // config loaded
 
-  jac = rbd::Jacobian(robot.mb(), robot.frame(referenceFrame).body());
+  robotIsFloatingBase = (robot.mb().nrJoints() > 0 && robot.mb().joint(0).type() == rbd::Joint::Free);
+
+  jac = rbd::Jacobian(robot.mb(), referenceFrame);
   coriolis = new rbd::Coriolis(robot.mb());
   forwardDynamics = rbd::ForwardDynamics(robot.mb());
   forwardDynamics.computeC(robot.mb(), robot.mbc());
-
   forwardDynamics.computeH(robot.mb(), robot.mbc());
   auto inertiaMatrix = forwardDynamics.H() - forwardDynamics.HIr();
   prevH = inertiaMatrix;
@@ -88,9 +89,18 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
   pzero = inertiaMatrix * qdot;
 
   integralTermExtern = Eigen::VectorXd::Zero(6);
-  integralTermIntern = Eigen::VectorXd::Zero(dofNumber - 6);
+  if(robotIsFloatingBase)
+  {
+    // Remove the floating base part of the residuals
+    integralTermIntern = Eigen::VectorXd::Zero(dofNumber - 6);
+    internResidual = Eigen::VectorXd::Zero(dofNumber - 6);
+  }
+  else
+  {
+    integralTermIntern = Eigen::VectorXd::Zero(dofNumber);
+    internResidual = Eigen::VectorXd::Zero(dofNumber);
+  }
   integralTermWithRotorInertia = Eigen::VectorXd::Zero(dofNumber);
-  internResidual = Eigen::VectorXd::Zero(dofNumber - 6);
   externResidual = Eigen::VectorXd::Zero(6);
   residualWithRotorInertia = Eigen::VectorXd::Zero(dofNumber);
   FTSensorTorques = Eigen::VectorXd::Zero(dofNumber);
@@ -104,7 +114,7 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
   integralTermSpeed = Eigen::VectorXd::Zero(dofNumber);
   residualSpeed = Eigen::VectorXd::Zero(dofNumber);
 
-  rightShoulderForce = sva::ForceVecd::Zero();
+  referenceFrameForce = sva::ForceVecd::Zero();
 
   counter = 0;
 
@@ -144,13 +154,14 @@ void ExternalForcesEstimator::before(mc_control::MCGlobalController & controller
     return;
   }
 
-  auto & robot = ctl.robot();
-  if(robot.mb().nrJoints() > 0 && robot.mb().joint(0).type() == rbd::Joint::Free)
+  if(robotIsFloatingBase)
   {
+    // mc_rtc::log::info("ExternalForcesEstimator::before: Floating base detected, using floating base dynamics");
     computeForFloatingBase(controller);
   }
   else
   {
+    // mc_rtc::log::info("ExternalForcesEstimator::before: Fixed base detected, using fixed base dynamics");
     computeForFixedBase(controller);
   }
 }
@@ -183,21 +194,23 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
   switch(tau_mes_src_)
   {
     case TorqueSourceType::CommandedTorque:
-      rbd::paramToVector(robot.jointTorque(), tau);
+      mc_rtc::log::error_and_throw<std::runtime_error>("Not implemented yet"); // Need friction model to finalize
+      // rbd::paramToVector(robot.jointTorque(), tau);
       break;
     case TorqueSourceType::CurrentMeasurement:
-      mc_rtc::log::error_and_throw<std::runtime_error>("Not implemented yet");
+      mc_rtc::log::error_and_throw<std::runtime_error>("Not implemented yet"); 
       break;
     case TorqueSourceType::MotorTorqueMeasurement:
-      tau = Eigen::VectorXd::Map(realRobot.jointTorques().data(), realRobot.jointTorques().size())
-            * robot.mb().joint(robot.mb().nrJoints() - 1).gearRatio();
+      mc_rtc::log::error_and_throw<std::runtime_error>("Not implemented yet"); // Need friction model to finalize
+      // tau = Eigen::VectorXd::Map(realRobot.jointTorques().data(), realRobot.jointTorques().size())
+      //       * robot.mb().joint(robot.mb().nrJoints() - 1).gearRatio();
       break;
     case TorqueSourceType::JointTorqueMeasurement:
       tau = Eigen::VectorXd::Map(realRobot.jointTorques().data(), realRobot.jointTorques().size());
       break;
   }
 
-  auto R = controller.robot().bodyPosW(robot.frame(referenceFrame).body()).rotation();
+  auto R = controller.robot().bodyPosW(referenceFrame).rotation();
 
   forwardDynamics.computeC(realRobot.mb(), realRobot.mbc());
   forwardDynamics.computeH(realRobot.mb(), realRobot.mbc());
@@ -205,7 +218,7 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
   Eigen::VectorXd coriolisGravityTerm = forwardDynamics.C();
 
   integralTermIntern += (tau + (coriolisMatrix + coriolisMatrix.transpose()) * qdot - coriolisGravityTerm
-                         + extTorqueSensor->torques() + internResidual)
+                        + internResidual)
                         * ctl.timestep();
   auto inertiaMatrix = forwardDynamics.H() - forwardDynamics.HIr();
   auto pt = inertiaMatrix * qdot;
@@ -215,7 +228,7 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
   auto inertiaMatrixWithRotorInertia = forwardDynamics.H();
   auto ptWithRotorInertia = inertiaMatrixWithRotorInertia * qdot;
   integralTermWithRotorInertia += (tau + (coriolisMatrix + coriolisMatrix.transpose()) * qdot - coriolisGravityTerm
-                                   + extTorqueSensor->torques() + residualWithRotorInertia)
+                                  + residualWithRotorInertia)
                                   * ctl.timestep();
   residualWithRotorInertia = residualGains * (ptWithRotorInertia - integralTermWithRotorInertia + pzero);
 
@@ -241,38 +254,36 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
   externalForcesResidual.couple() = R * externalForcesResidual.couple();
   // mc_rtc::log::info("===== {}", jTranspose.completeOrthogonalDecomposition().pseudoInverse()*jTranspose);
 
-  auto sva_EF_FT = realRobot.forceSensor(ft_sensor_name_).wrenchWithoutGravity(realRobot);
-  // if(!use_force_sensor_) sva_EF_FT = sva_EF_FT.Zero();
-  externalForcesFT = sva_EF_FT.vector();
-  // Applying some rotation so it match the same world as the residual
-  externalForces.force() = R.transpose() * sva_EF_FT.force();
-  externalForces.couple() = R.transpose() * sva_EF_FT.couple();
-  FTSensorTorques = jac.jacobian(realRobot.mb(), realRobot.mbc()).transpose() * (externalForces.vector());
-  double alpha = 1 - exp(-dt * residualGains);
-  filteredFTSensorTorques += alpha * (FTSensorTorques - filteredFTSensorTorques);
-  newExternalTorques = internResidual + (FTSensorTorques - filteredFTSensorTorques);
-  filteredExternalTorques = newExternalTorques;
-
-  filteredFTSensorForces = sva::ForceVecd(jac.jacobian(realRobot.mb(), realRobot.mbc())
-                                              .transpose()
-                                              .completeOrthogonalDecomposition()
-                                              .solve(filteredFTSensorTorques));
-  filteredFTSensorForces.force() = R * filteredFTSensorForces.force();
-  filteredFTSensorForces.couple() = R * filteredFTSensorForces.couple();
-
-  newExternalForces = sva::ForceVecd(jac.jacobian(realRobot.mb(), realRobot.mbc())
-                                         .transpose()
-                                         .completeOrthogonalDecomposition()
-                                         .solve(newExternalTorques));
-  newExternalForces.force() = R * newExternalForces.force();
-  newExternalForces.couple() = R * newExternalForces.couple();
-
-  if(use_force_sensor_)
+  if (use_force_sensor_)
   {
+    auto sva_EF_FT = realRobot.forceSensor(ft_sensor_name_).wrenchWithoutGravity(realRobot);
+    externalForcesFT = sva_EF_FT.vector();
+    // Applying some rotation so it match the same world as the residual
+    externalForces.force() = R.transpose() * sva_EF_FT.force();
+    externalForces.couple() = R.transpose() * sva_EF_FT.couple();
+    FTSensorTorques = jac.jacobian(realRobot.mb(), realRobot.mbc()).transpose() * (externalForces.vector());
+    double alpha = 1 - exp(-dt * residualGains);
+    filteredFTSensorTorques += alpha * (FTSensorTorques - filteredFTSensorTorques);
+    newExternalTorques = internResidual + (FTSensorTorques - filteredFTSensorTorques);
+    filteredExternalTorques = newExternalTorques;
+    filteredFTSensorForces = sva::ForceVecd(jac.jacobian(realRobot.mb(), realRobot.mbc())
+                                                .transpose()
+                                                .completeOrthogonalDecomposition()
+                                                .solve(filteredFTSensorTorques));
+    filteredFTSensorForces.force() = R * filteredFTSensorForces.force();
+    filteredFTSensorForces.couple() = R * filteredFTSensorForces.couple();
+
+    newExternalForces = sva::ForceVecd(jac.jacobian(realRobot.mb(), realRobot.mbc())
+                                          .transpose()
+                                          .completeOrthogonalDecomposition()
+                                          .solve(newExternalTorques));
+    newExternalForces.force() = R * newExternalForces.force();
+    newExternalForces.couple() = R * newExternalForces.couple();
     externalTorques = filteredExternalTorques;
   }
   else
   {
+    // If the force sensor is not used, we use the residual as external forces
     externalTorques = internResidual;
   }
 
@@ -361,7 +372,7 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
       break;
   }
 
-  std::cout << "==============================" << std::endl;
+  // std::cout << "==============================" << std::endl;
   Eigen::VectorXd qdot_fb = qdot.head<6>();
   Eigen::VectorXd qdot_joint = qdot.tail(dofNumber - 6);
   Eigen::VectorXd tau_joint = tau.tail(dofNumber - 6);
@@ -457,9 +468,9 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
       (I_c_0d * qdot_fb + Fd * qdot_joint - coriolisGravityTerm.head(6) + fsum + externResidual) * ctl.timestep();
   externResidual = residualGains * (Ic0 * qdot_fb + F * qdot_joint - integralTermExtern);
   // std::cout << "integralTermIntern = \n" << integralTermIntern.transpose() << std::endl;
-  std::cout << "internResidual = \n" << internResidual.transpose() << std::endl;
+  // std::cout << "internResidual = \n" << internResidual.transpose() << std::endl;
   // std::cout << "integralTermExtern = \n" << integralTermExtern.transpose() << std::endl;
-  std::cout << "externResidual = \n" << externResidual.transpose() << std::endl;
+  // std::cout << "externResidual = \n" << externResidual.transpose() << std::endl;
 
   Eigen::VectorXd residual_fb(dofNumber);
   residual_fb.head<6>() = externResidual; // externResidual;
@@ -471,7 +482,7 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
 
   // std::cout << "Shoulder PTransformd" << realRobot.bodyPosW("R_SHOULDER_P_S").matrix().format(format) << std::endl;
 
-  auto jacobian_forces = rbd::Jacobian(realRobot.mb(), "R_SHOULDER_P_S");
+  auto jacobian_forces = rbd::Jacobian(realRobot.mb(), referenceFrame);
   auto Jac_forces = jacobian_forces.jacobian(realRobot.mb(), realRobot.mbc(), realRobot.posW());
   Eigen::MatrixXd fullJac_forces(6, dofNumber);
   jacobian_forces.fullJacobian(realRobot.mb(), Jac_forces, fullJac_forces);
@@ -479,12 +490,12 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
   Eigen::MatrixXd augmented_Jfb_forces(6, dofNumber);
   augmented_Jfb_forces.block(0, 0, 6, 6).setIdentity();
   augmented_Jfb_forces.block(0, 6, 6, dofNumber - 6) = Jfb_forces;
-  rightShoulderForce =
+  referenceFrameForce =
       sva::ForceVecd(augmented_Jfb_forces.ldlt().solve(realRobot.posW().matrix().transpose() * residual_fb));
 
   externalTorques = residual;
   Eigen::VectorXd externalAccelerations = Eigen::VectorXd::Zero(dofNumber);
-  mc_rtc::log::info("dofNumber = {}", dofNumber);
+  // mc_rtc::log::info("dofNumber = {}", dofNumber);
   // mc_rtc::log::info("Hfb: rows = {}, cols = {}", Hfb.rows(), Hfb.cols());
   externalAccelerations.tail(dofNumber - 6) = Hsub.ldlt().solve(externalTorques.tail(dofNumber - 6));
   // std::cout << "Equivalent Acc = \n" << externalAccelerations.transpose() << std::endl;
@@ -524,7 +535,7 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
   if(isActive)
   {
     extTorqueSensor->torques(externalTorques);
-    extTorqueSensor->equivalentAcc(externalAccelerations);
+    // extTorqueSensor->equivalentAcc(externalAccelerations);
     counter = 0;
   }
   else if(!onePluginIsActive)
@@ -677,7 +688,7 @@ void ExternalForcesEstimator::computeCHatPc0Hat(mc_control::MCGlobalController &
     }
   }
 
-  mc_rtc::log::info("C hat = {}", c_hat.transpose());
+  // mc_rtc::log::info("C hat = {}", c_hat.transpose());
 }
 
 void ExternalForcesEstimator::addGui(mc_control::MCGlobalController & controller)
@@ -754,11 +765,11 @@ void ExternalForcesEstimator::addGui(mc_control::MCGlobalController & controller
 
   ctl.controller().gui()->addElement({"Plugins", "External forces estimator"},
                                      mc_rtc::gui::Force(
-                                         "Right shoulder estimation", fConf,
-                                         [this]() { return this->rightShoulderForce; },
+                                         "reference frame estimation", fConf,
+                                         [this]() { return this->referenceFrameForce; },
                                          [this, &controller]()
                                          {
-                                           auto transform = controller.robot().bodyPosW("R_SHOULDER_P_S");
+                                           auto transform = controller.robot().bodyPosW(referenceFrame);
                                            return transform;
                                          }));
 }

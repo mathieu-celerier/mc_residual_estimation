@@ -53,6 +53,7 @@ struct ExternalForcesEstimator : public mc_control::GlobalPlugin
   void removeLog(mc_control::MCGlobalController & controller);
 
 private:
+  bool robotIsFloatingBase;
   int dofNumber;
   int counter;
   double dt;
@@ -106,7 +107,7 @@ private:
   Eigen::MatrixXd prevF;
   Eigen::MatrixXd prevI_c_0;
 
-  sva::ForceVecd rightShoulderForce;
+  sva::ForceVecd referenceFrameForce;
   sva::ForceVecd leftShoulderForce;
 
   // Custom forward dynamic calculation
