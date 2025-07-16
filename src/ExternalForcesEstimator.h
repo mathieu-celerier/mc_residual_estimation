@@ -106,9 +106,9 @@ private:
   Eigen::MatrixXd prevH;
   Eigen::MatrixXd prevF;
   Eigen::MatrixXd prevI_c_0;
+  Eigen::MatrixXd mimicExclusion;
 
-  sva::ForceVecd referenceFrameForce;
-  sva::ForceVecd leftShoulderForce;
+  std::vector<sva::ForceVecd> EstimationAtFTSensors;
 
   // Custom forward dynamic calculation
   Eigen::MatrixXd H;
@@ -121,6 +121,9 @@ private:
   Eigen::VectorXd c_hat;
 
   Eigen::IOFormat format;
+
+  // Logging
+  Eigen::VectorXd alphas;
 };
 
 } // namespace mc_plugin
