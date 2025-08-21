@@ -479,7 +479,7 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
   internResidual = residualGains * (Hfb * qdot_joint - integralTermIntern);
   integralTermExtern +=
       (I_c_0d * qdot_fb + Fd * qdot_joint - coriolisGravityTerm.head(6) + fsum + externResidual) * ctl.timestep();
-  externResidual = 5 * residualGains * (Ic0 * qdot_fb + F * qdot_joint - integralTermExtern);
+  externResidual = residualGains * (Ic0 * qdot_fb + F * qdot_joint - integralTermExtern);
   // std::cout << "integralTermIntern = \n" << integralTermIntern.transpose() << std::endl;
   // std::cout << "internResidual = \n" << internResidual.transpose() << std::endl;
   // std::cout << "integralTermExtern = \n" << integralTermExtern.transpose() << std::endl;
@@ -541,7 +541,7 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
 
   // bool anotherPluginIsActive = false;
   bool onePluginIsActive = false;
-  if(extTorquePlugin.size() > 0)
+  if(extTorquePlugin.size() > 1)
   {
     onePluginIsActive = true;
     for(const auto & pluginName : extTorquePlugin)
@@ -567,6 +567,7 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
   else if(!onePluginIsActive)
   {
     Eigen::VectorXd zero = Eigen::VectorXd::Zero(dofNumber);
+    mc_rtc::log::info("Sending 0!");
     extTorqueSensor->torques(zero);
     if(counter == 1) mc_rtc::log::warning("External force feedback inactive");
   }
