@@ -69,6 +69,9 @@ private:
 
   Eigen::VectorXd pzero;
 
+  Eigen::VectorXd integralTermNormal;
+  Eigen::VectorXd residualNormal;
+
   Eigen::VectorXd integralTermIntern;
   Eigen::VectorXd internResidual;
   Eigen::VectorXd integralTermExtern;
@@ -124,6 +127,9 @@ private:
 
   // Logging
   Eigen::VectorXd alphas;
+  Eigen::VectorXd gravity;
+  Eigen::VectorXd inputTorque;
+  Eigen::VectorXd commandedAcceleration;
 };
 
 } // namespace mc_plugin

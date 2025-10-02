@@ -2,9 +2,11 @@
 #include <mc_control/GlobalPluginMacros.h>
 #include <mc_control/mc_global_controller.h>
 #include <mc_rtc/logging.h>
+#include <RBDyn/MultiBodyConfig.h>
 #include <SpaceVecAlg/EigenTypedef.h>
 #include <SpaceVecAlg/EigenUtility.h>
 #include <SpaceVecAlg/SpaceVecAlg>
+#include <Eigen/src/Core/Map.h>
 #include <Eigen/src/Core/Matrix.h>
 #include <cstddef>
 #include <string>
@@ -60,18 +62,22 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
   if(source_type.compare("CommandedTorque") == 0)
   {
     tau_mes_src_ = TorqueSourceType::CommandedTorque;
+    mc_rtc::log::info("Using CommandedTorque input");
   }
   else if(source_type.compare("CurrentMeasurement") == 0)
   {
     tau_mes_src_ = TorqueSourceType::CurrentMeasurement;
+    mc_rtc::log::info("Using CurrentMeasurement input");
   }
   else if(source_type.compare("MotorTorqueMeasurement") == 0)
   {
     tau_mes_src_ = TorqueSourceType::MotorTorqueMeasurement;
+    mc_rtc::log::info("Using MotorTorqueMeasurement input");
   }
   else if(source_type.compare("JointTorqueMeasurement") == 0)
   {
     tau_mes_src_ = TorqueSourceType::JointTorqueMeasurement;
+    mc_rtc::log::info("Using JointTorqueMeasurement input");
   }
   else
   {
@@ -116,6 +122,8 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
   externalForces = sva::ForceVecd::Zero();
   externalForcesResidual = sva::ForceVecd::Zero();
   externalForcesFT = Eigen::Vector6d::Zero();
+  integralTermNormal = Eigen::VectorXd::Zero(dofNumber);
+  residualNormal = Eigen::VectorXd::Zero(dofNumber);
 
   integralTermSpeed = Eigen::VectorXd::Zero(dofNumber);
   residualSpeed = Eigen::VectorXd::Zero(dofNumber);
@@ -363,15 +371,23 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
   auto & rjo = realRobot.refJointOrder();
 
   Eigen::VectorXd qdot(dofNumber), tau(dofNumber), tau_joint(dofNumber - 6);
-  qdot = rbd::paramToVector(realRobot.mb(), realRobot.alpha());
+  qdot.setZero();
+  qdot = rbd::dofToVector(realRobot.mb(), realRobot.alpha());
+  // mc_rtc::log::info("alpha = {}", qdot.transpose());
+  // qdot.setZero();
+  // qdot.tail(dofNumber - 6) =
+  //     Eigen::Map<const Eigen::VectorXd>(realRobot.encoderVelocities().data(), realRobot.encoderVelocities().size());
+  // mc_rtc::log::info("encoderVelocities = {}", qdot.transpose());
   mc_rtc::log::info("Alphas size = {}", qdot.size());
   alphas = qdot;
+  tau.setZero();
   tau_joint.setZero();
 
   switch(tau_mes_src_)
   {
     case TorqueSourceType::CommandedTorque:
-      tau = rbd::paramToVector(realRobot.mb(), robot.jointTorque());
+      tau = rbd::dofToVector(realRobot.mb(), robot.jointTorque());
+      mc_rtc::log::info("Commanded torque JointTorques size = {}", tau.rows());
       tau_joint = tau.tail(dofNumber - 6);
       break;
     case TorqueSourceType::CurrentMeasurement:
@@ -384,8 +400,11 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
     case TorqueSourceType::JointTorqueMeasurement:
       mc_rtc::log::info("JointTorques size = {}", realRobot.jointTorques().size());
       tau_joint = Eigen::Map<const Eigen::VectorXd>(realRobot.jointTorques().data(), realRobot.jointTorques().size());
+      tau.tail(dofNumber - 6) = tau_joint;
       break;
   }
+  inputTorque = tau;
+  commandedAcceleration = rbd::dofToVector(robot.mb(), robot.alphaD());
 
   // std::cout << "==============================" << std::endl;
   Eigen::VectorXd qdot_fb = qdot.head(6);
@@ -403,7 +422,8 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
   auto coriolisMatrix = coriolis->coriolis(realRobot.mb(), realRobot.mbc());
   Eigen::VectorXd coriolisGravityTerm = Eigen::VectorXd::Zero(dofNumber);
   computeCHatPc0Hat(controller);
-  coriolisGravityTerm = c_hat;
+  coriolisGravityTerm = forwardDynamics.C();
+  gravity = coriolisGravityTerm - coriolisMatrix * qdot;
 
   format = Eigen::IOFormat(2, 0, " ", "\n", " ", " ", "[", "]");
 
@@ -474,6 +494,21 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
   // std::cout << "I_c_0d*qdot_fb = \n" << (I_c_0d * qdot_fb).transpose() << std::endl;
   // std::cout << "Fd*qdot_joint = \n" << (Fd * qdot_joint).transpose() << std::endl;
   // std::cout << "pc0 = \n" << coriolisGravityTerm.head(6).transpose() << std::endl;
+
+  mc_rtc::log::info("qdot.rows = {}\nC.rows = {}\nCq.rows = {}", qdot.rows(), coriolisMatrix.rows(),
+                    forwardDynamics.C().rows());
+
+  fsum.setZero();
+  torque_sum.setZero();
+
+  // Eigen::VectorXd sensor_tau(dofNumber);
+  // sensor_tau << fsum, torque_sum;
+
+  integralTermNormal +=
+      (tau + (coriolisMatrix + coriolisMatrix.transpose()) * qdot - forwardDynamics.C() + residualNormal)
+      * ctl.timestep();
+  residualNormal = residualGains * (H * qdot - integralTermNormal);
+  // residualNormal.head(6).setZero();
 
   integralTermIntern += (tau_joint + torque_sum + Hfbd * qdot_joint - Cfb + internResidual) * ctl.timestep();
   internResidual = residualGains * (Hfb * qdot_joint - integralTermIntern);
@@ -806,6 +841,10 @@ void ExternalForcesEstimator::addGui(mc_control::MCGlobalController & controller
 void ExternalForcesEstimator::addLog(mc_control::MCGlobalController & controller)
 {
   controller.controller().logger().addLogEntry("ExternalForceEstimator_alpha", [&, this]() { return alphas; });
+  controller.controller().logger().addLogEntry("ExternalForceEstimator_inputTorque",
+                                               [&, this]() { return inputTorque; });
+  controller.controller().logger().addLogEntry("gravity", [&, this]() { return gravity; });
+  controller.controller().logger().addLogEntry("commanded_acceleration", [&, this]() { return commandedAcceleration; });
   controller.controller().logger().addLogEntry("ExternalForceEstimator_gain",
                                                [&, this]() { return this->residualGains; });
   controller.controller().logger().addLogEntry("ExternalForceEstimator_wrench",
