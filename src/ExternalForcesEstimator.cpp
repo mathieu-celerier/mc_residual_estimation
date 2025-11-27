@@ -269,7 +269,7 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
   externalForcesResidual.couple() = R * externalForcesResidual.couple();
   // mc_rtc::log::info("===== {}", jTranspose.completeOrthogonalDecomposition().pseudoInverse()*jTranspose);
 
-  if(use_force_sensor_)
+  if(use_force_sensor_ && ft_sensor_name_ != "none")
   {
     auto sva_EF_FT = realRobot.forceSensor(ft_sensor_name_).wrenchWithoutGravity(realRobot);
     externalForcesFT = sva_EF_FT.vector();
