@@ -14,8 +14,7 @@
 #include <RBDyn/MultiBody.h>
 #include <RBDyn/MultiBodyConfig.h>
 #include <Eigen/src/Core/Matrix.h>
-
-#include <mc_rbdyn/VirtualTorqueSensor.h>
+#include <memory>
 
 #include <mc_tvm/Robot.h>
 
@@ -90,7 +89,6 @@ private:
   sva::ForceVecd newExternalForces;
   sva::ForceVecd filteredFTSensorForces;
   Eigen::Vector6d externalForcesFT;
-  mc_rbdyn::VirtualTorqueSensor * extTorqueSensor;
 
   // Used for collision avoidance observer, not for the control
   Eigen::VectorXd residualSpeed;

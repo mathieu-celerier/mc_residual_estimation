@@ -2,14 +2,16 @@
 #include <mc_control/GlobalPluginMacros.h>
 #include <mc_control/mc_global_controller.h>
 #include <mc_rtc/logging.h>
-#include <RBDyn/MultiBodyConfig.h>
+#include <mc_rtc/unique_ptr.h>
 #include <SpaceVecAlg/EigenTypedef.h>
 #include <SpaceVecAlg/EigenUtility.h>
 #include <SpaceVecAlg/SpaceVecAlg>
 #include <Eigen/src/Core/Map.h>
 #include <Eigen/src/Core/Matrix.h>
 #include <cstddef>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace mc_plugin
@@ -21,14 +23,9 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
 {
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
 
-  mc_rtc::log::warning("Robot name = {}", ctl.robots()[0].name());
-  auto & robot = ctl.robot(ctl.robots()[0].name());
-  for(auto & j : robot.mb().joints())
-  {
-    mc_rtc::log::info("Plugin joint -> {}", j.name());
-  }
+  auto & robot = ctl.controller().robot(ctl.controller().robots()[0].name());
   auto & tvmRobot = robot.tvmRobot();
-  auto & realRobot = ctl.realRobot(ctl.robots()[0].name());
+  auto & realRobot = ctl.controller().realRobot(ctl.controller().robots()[0].name());
   auto & rjo = robot.refJointOrder();
 
   dt = ctl.timestep();
@@ -37,16 +34,8 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
 
   if(!ctl.controller().datastore().has("extTorquePlugin"))
   {
-    ctl.controller().datastore().make_initializer<std::vector<std::string>>("extTorquePlugin", "");
+    ctl.controller().datastore().make_initializer<std::vector<std::string>>("extTorquePlugin");
   }
-
-  if(!robot.hasDevice<mc_rbdyn::VirtualTorqueSensor>("ExtTorquesVirtSensor"))
-  {
-    mc_rtc::log::error_and_throw<std::runtime_error>("[ExternalForcesEstimator][Init] No \"VirtualTorqueSensor\" with "
-                                                     "the name \"ExtTorquesVirtSensor\" found in the "
-                                                     "robot module, please add one to the robot's RobotModule.");
-  }
-  extTorqueSensor = &robot.device<mc_rbdyn::VirtualTorqueSensor>("ExtTorquesVirtSensor");
 
   Eigen::VectorXd qdot(dofNumber);
   qdot = tvmRobot.alpha()->value();
@@ -168,7 +157,7 @@ void ExternalForcesEstimator::before(mc_control::MCGlobalController & controller
 {
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
 
-  if(ctl.robot().encoderVelocities().empty())
+  if(ctl.controller().robot().encoderVelocities().empty())
   {
     return;
   }
@@ -203,8 +192,8 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
 {
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
 
-  auto & robot = ctl.robot();
-  auto & realRobot = ctl.realRobot(ctl.robots()[0].name());
+  auto & robot = ctl.controller().robot();
+  auto & realRobot = ctl.controller().realRobot(ctl.controller().robots()[0].name());
 
   auto & rjo = realRobot.refJointOrder();
 
@@ -313,6 +302,9 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
   externalForces.force() = R * externalForces.force();
   externalForces.couple() = R * externalForces.couple();
 
+  Eigen::VectorXd externalAccelerations = Eigen::VectorXd::Zero(dofNumber);
+  externalAccelerations = inertiaMatrixWithRotorInertia.ldlt().solve(externalTorques);
+
   counter++;
 
   std::vector<std::string> & extTorquePlugin =
@@ -349,13 +341,15 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
 
   if(isActive)
   {
-    extTorqueSensor->torques(externalTorques);
+    realRobot.setExternalTorques(externalTorques);
+    realRobot.setExternalTorquesAcc(externalAccelerations);
     counter = 0;
   }
   else if(!onePluginIsActive)
   {
     Eigen::VectorXd zero = Eigen::VectorXd::Zero(dofNumber);
-    extTorqueSensor->torques(zero);
+    realRobot.setExternalTorques(zero);
+    realRobot.setExternalTorquesAcc(zero);
     if(counter == 1) mc_rtc::log::warning("External force feedback inactive");
   }
 }
@@ -364,8 +358,8 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
 {
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
 
-  auto & robot = ctl.robot();
-  auto & realRobot = ctl.realRobot(ctl.robots()[0].name());
+  auto & robot = ctl.controller().robot();
+  auto & realRobot = ctl.controller().realRobot(ctl.controller().robots()[0].name());
   auto & realTvmRobot = realRobot.tvmRobot();
 
   auto & rjo = realRobot.refJointOrder();
@@ -595,15 +589,15 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
 
   if(isActive)
   {
-    extTorqueSensor->torques(externalTorques);
-    extTorqueSensor->equivalentAcc(externalAccelerations);
+    realRobot.setExternalTorques(externalTorques);
+    realRobot.setExternalTorquesAcc(externalAccelerations);
     counter = 0;
   }
   else if(!onePluginIsActive)
   {
     Eigen::VectorXd zero = Eigen::VectorXd::Zero(dofNumber);
-    mc_rtc::log::info("Sending 0!");
-    extTorqueSensor->torques(zero);
+    realRobot.setExternalTorques(zero);
+    realRobot.setExternalTorquesAcc(zero);
     if(counter == 1) mc_rtc::log::warning("External force feedback inactive");
   }
 }
