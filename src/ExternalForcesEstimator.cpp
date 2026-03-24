@@ -95,7 +95,38 @@ Eigen::MatrixXd selectSubmatrix(const Eigen::MatrixXd & matrix, const std::vecto
   return out;
 }
 
-Eigen::VectorXd sanitizeTorqueInput(const Eigen::VectorXd & raw,
+int jointDofOffset(const rbd::MultiBody & mb, int jointIndex)
+{
+  int offset = 0;
+  for(int i = 0; i < jointIndex; ++i)
+  {
+    offset += mb.joint(i).dof();
+  }
+  return offset;
+}
+
+Eigen::VectorXd refJointOrderToFullDof(const mc_rbdyn::Robot & robot, const Eigen::VectorXd & raw, int fullSize)
+{
+  Eigen::VectorXd out = Eigen::VectorXd::Zero(fullSize);
+  for(Eigen::Index i = 0; i < raw.size(); ++i)
+  {
+    const auto jointIndex = robot.jointIndexInMBC(static_cast<size_t>(i));
+    if(jointIndex == -1)
+    {
+      continue;
+    }
+    const auto & joint = robot.mb().joint(jointIndex);
+    if(joint.dof() != 1)
+    {
+      continue;
+    }
+    out(jointDofOffset(robot.mb(), jointIndex)) = raw(i);
+  }
+  return out;
+}
+
+Eigen::VectorXd sanitizeTorqueInput(const mc_rbdyn::Robot & robot,
+                                    const Eigen::VectorXd & raw,
                                     const std::vector<int> & activeIndices,
                                     int fullSize,
                                     int preservedPrefix)
@@ -110,9 +141,15 @@ Eigen::VectorXd sanitizeTorqueInput(const Eigen::VectorXd & raw,
   {
     return scatterEntries(raw, activeIndices, fullSize);
   }
+  if(raw.size() == static_cast<Eigen::Index>(robot.refJointOrder().size()))
+  {
+    auto out = refJointOrderToFullDof(robot, raw, fullSize);
+    zeroInactiveEntries(out, activeIndices, preservedPrefix);
+    return out;
+  }
   mc_rtc::log::error_and_throw<std::runtime_error>(
-      "[ExternalForcesEstimator] Unexpected torque vector size {}, expected {} or {}", raw.size(), fullSize,
-      activeIndices.size());
+      "[ExternalForcesEstimator] Unexpected torque vector size {}, expected {}, {} or {}", raw.size(), fullSize,
+      activeIndices.size(), robot.refJointOrder().size());
 }
 
 } // namespace
@@ -358,8 +395,8 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
       //       * robot.mb().joint(robot.mb().nrJoints() - 1).gearRatio();
       break;
     case TorqueSourceType::JointTorqueMeasurement:
-      tau = sanitizeTorqueInput(Eigen::Map<const Eigen::VectorXd>(realRobot.jointTorques().data(),
-                                                                  realRobot.jointTorques().size()),
+      tau = sanitizeTorqueInput(realRobot, Eigen::Map<const Eigen::VectorXd>(realRobot.jointTorques().data(),
+                                                                             realRobot.jointTorques().size()),
                                 activeJointIndices, dofNumber, 0);
       break;
   }
@@ -545,15 +582,17 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
       mc_rtc::log::error_and_throw<std::runtime_error>("Not implemented yet");
       break;
     case TorqueSourceType::MotorTorqueMeasurement:
-      tau_joint = selectEntries(sanitizeTorqueInput(Eigen::Map<const Eigen::VectorXd>(realRobot.jointTorques().data(),
-                                                                                       realRobot.jointTorques().size())
+      tau_joint = selectEntries(sanitizeTorqueInput(realRobot,
+                                                    Eigen::Map<const Eigen::VectorXd>(realRobot.jointTorques().data(),
+                                                                                      realRobot.jointTorques().size())
                                                         * robot.mb().joint(robot.mb().nrJoints() - 1).gearRatio(),
                                                     activeJointIndices, dofNumber, 6),
                                 activeJointIndices);
       break;
     case TorqueSourceType::JointTorqueMeasurement:
-      tau_joint = selectEntries(sanitizeTorqueInput(Eigen::Map<const Eigen::VectorXd>(realRobot.jointTorques().data(),
-                                                                                       realRobot.jointTorques().size()),
+      tau_joint = selectEntries(sanitizeTorqueInput(realRobot,
+                                                    Eigen::Map<const Eigen::VectorXd>(realRobot.jointTorques().data(),
+                                                                                      realRobot.jointTorques().size()),
                                                     activeJointIndices, dofNumber, 6),
                                 activeJointIndices);
       break;
