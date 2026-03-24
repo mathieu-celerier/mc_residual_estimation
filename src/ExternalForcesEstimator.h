@@ -46,7 +46,7 @@ struct ExternalForcesEstimator : public mc_control::GlobalPlugin
   void computeForFixedBase(mc_control::MCGlobalController & controller);
   void computeForFloatingBase(mc_control::MCGlobalController & controller);
   void computeForwardDynamic(mc_control::MCGlobalController & controller);
-  void computeCHatPc0Hat(mc_control::MCGlobalController & controller);
+  void computeCHatPc0Hat(mc_control::MCGlobalController & controller, const rbd::MultiBodyConfig & mbc);
   void addGui(mc_control::MCGlobalController & controller);
   void addLog(mc_control::MCGlobalController & controller);
   void removeLog(mc_control::MCGlobalController & controller);
@@ -54,6 +54,7 @@ struct ExternalForcesEstimator : public mc_control::GlobalPlugin
 private:
   std::vector<int> activeJointIndices; // A vector of the same size as the number of joints, with 1 for
                                        // estimated joints and 0 for non-estimated joints
+  int actuatedDofNumber = 0;
 
   bool robotIsFloatingBase;
   int dofNumber;
