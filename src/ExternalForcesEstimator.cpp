@@ -23,9 +23,9 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
 {
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
 
-  auto & robot = ctl.controller().robot(ctl.controller().robots()[0].name());
+  auto & robot = ctl.robot(ctl.robots()[0].name());
   auto & tvmRobot = robot.tvmRobot();
-  auto & realRobot = ctl.controller().realRobot(ctl.controller().robots()[0].name());
+  auto & realRobot = ctl.realRobot(ctl.robots()[0].name());
   auto & rjo = robot.refJointOrder();
 
   dt = ctl.timestep();
@@ -127,6 +127,8 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
   mimicExclusion.setIdentity(dofNumber, dofNumber);
 
   // Create datastore's entries to change modify parameters from code
+  ctl.controller().datastore().make<Eigen::VectorXd>("EF_Estimator::getResidualOnly", internResidual);
+
   ctl.controller().datastore().make_call("EF_Estimator::isActive", [this]() { return this->isActive; });
   ctl.controller().datastore().make_call("EF_Estimator::toggleActive", [this]() { this->isActive = !this->isActive; });
   ctl.controller().datastore().make_call("EF_Estimator::useForceSensor", [this]() { return this->use_force_sensor_; });
@@ -172,6 +174,10 @@ void ExternalForcesEstimator::before(mc_control::MCGlobalController & controller
     // mc_rtc::log::info("ExternalForcesEstimator::before: Fixed base detected, using fixed base dynamics");
     computeForFixedBase(controller);
   }
+
+  // mc_rtc::log::info("[mc_residual] realRobot & = {}, realRobot.externalTorques = {}",
+  //                   fmt::ptr(&controller.controller().realRobot()),
+  //                   controller.controller().realRobot().externalTorques());
 }
 
 void ExternalForcesEstimator::after(mc_control::MCGlobalController & controller)
@@ -192,8 +198,8 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
 {
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
 
-  auto & robot = ctl.controller().robot();
-  auto & realRobot = ctl.controller().realRobot(ctl.controller().robots()[0].name());
+  auto & robot = ctl.robot();
+  auto & realRobot = ctl.realRobot(ctl.robots()[0].name());
 
   auto & rjo = realRobot.refJointOrder();
 
@@ -232,6 +238,7 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
   auto pt = inertiaMatrix * qdot;
 
   internResidual = residualGains * (pt - integralTermIntern + pzero);
+  ctl.controller().datastore().assign<Eigen::VectorXd>("EF_Estimator::getResidualOnly", internResidual);
 
   auto inertiaMatrixWithRotorInertia = forwardDynamics.H();
   auto ptWithRotorInertia = inertiaMatrixWithRotorInertia * qdot;
@@ -341,16 +348,31 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
 
   if(isActive)
   {
-    realRobot.setExternalTorques(externalTorques);
-    realRobot.setExternalTorquesAcc(externalAccelerations);
+    ctl.controller().realRobot().setExternalTorques(externalTorques);
+    ctl.controller().realRobot().setExternalTorquesAcc(externalAccelerations);
+    mc_rtc::log::info("[mc_residual] \n\t externalTorques: = {}, \n\t residual = {}, \n\t newExternalTorques = {}",
+                      externalTorques, internResidual, newExternalTorques);
+    // mc_rtc::log::info("[mc_residual] externalTorques = {}, robot.externalTorques = {}", externalTorques,
+    //                   realRobot.externalTorques());
+    // mc_rtc::log::info("[mc_residual] externalAccelerations = {}, robot.externalAccelerations = {}",
+    //                   externalAccelerations, realRobot.externalTorquesAcc());
     counter = 0;
   }
   else if(!onePluginIsActive)
   {
     Eigen::VectorXd zero = Eigen::VectorXd::Zero(dofNumber);
-    realRobot.setExternalTorques(zero);
-    realRobot.setExternalTorquesAcc(zero);
+    ctl.controller().realRobot().setExternalTorques(zero);
+    ctl.controller().realRobot().setExternalTorquesAcc(zero);
+    // mc_rtc::log::info("[mc_residual] externalTorques = {}, robot.externalTorques = {}", externalTorques,
+    //                   realRobot.externalTorques());
+    // mc_rtc::log::info("[mc_residual] externalAccelerations = {}, robot.externalAccelerations = {}",
+    //                   externalAccelerations, realRobot.externalTorquesAcc());
     if(counter == 1) mc_rtc::log::warning("External force feedback inactive");
+  }
+  else
+  {
+    mc_rtc::log::info("[mc_residual] isActive = {}, onePluginIsActive = {}, extTorquePlugin = {}", isActive,
+                      onePluginIsActive, extTorquePlugin);
   }
 }
 
@@ -358,8 +380,8 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
 {
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
 
-  auto & robot = ctl.controller().robot();
-  auto & realRobot = ctl.controller().realRobot(ctl.controller().robots()[0].name());
+  auto & robot = ctl.robot();
+  auto & realRobot = ctl.realRobot(ctl.robots()[0].name());
   auto & realTvmRobot = realRobot.tvmRobot();
 
   auto & rjo = realRobot.refJointOrder();
@@ -589,15 +611,15 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
 
   if(isActive)
   {
-    realRobot.setExternalTorques(externalTorques);
-    realRobot.setExternalTorquesAcc(externalAccelerations);
+    ctl.controller().realRobot().setExternalTorques(externalTorques);
+    ctl.controller().realRobot().setExternalTorquesAcc(externalAccelerations);
     counter = 0;
   }
   else if(!onePluginIsActive)
   {
     Eigen::VectorXd zero = Eigen::VectorXd::Zero(dofNumber);
-    realRobot.setExternalTorques(zero);
-    realRobot.setExternalTorquesAcc(zero);
+    ctl.controller().realRobot().setExternalTorques(zero);
+    ctl.controller().realRobot().setExternalTorquesAcc(zero);
     if(counter == 1) mc_rtc::log::warning("External force feedback inactive");
   }
 }
