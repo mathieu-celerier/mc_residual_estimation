@@ -544,7 +544,7 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
   else
   {
     mc_rtc::log::info("[mc_residual] isActive = {}, onePluginIsActive = {}, extTorquePlugin = {}", isActive,
-                      onePluginIsActive, extTorquePlugin);
+                      onePluginIsActive, fmt::join(extTorquePlugin, ","));
   }
 }
 
