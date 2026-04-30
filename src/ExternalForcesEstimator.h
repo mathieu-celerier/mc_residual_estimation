@@ -52,22 +52,38 @@ struct ExternalForcesEstimator : public mc_control::GlobalPlugin
   void removeLog(mc_control::MCGlobalController & controller);
 
 private:
+  void initializeActiveJoints(const mc_rbdyn::Robot & robot);
+  void loadConfiguration(const mc_rtc::Configuration & config);
+  void initializeEstimatorState(const mc_rbdyn::Robot & robot, const Eigen::VectorXd & qdot);
+  Eigen::VectorXd readMeasuredTorque(const mc_rbdyn::Robot & robot,
+                                     const mc_rbdyn::Robot & realRobot,
+                                     int preservedPrefix) const;
+  bool updatePluginActivation(mc_control::MCGlobalController & controller) const;
+  void publishExternalTorqueState(mc_control::MCGlobalController & controller,
+                                  const mc_rbdyn::Robot & robot,
+                                  const mc_rbdyn::Robot & realRobot,
+                                  const Eigen::VectorXd & torques,
+                                  const Eigen::VectorXd & accelerations);
+  void clearExternalTorqueState(mc_control::MCGlobalController & controller,
+                                const mc_rbdyn::Robot & realRobot) const;
+  void resetResidualGain(double gain);
+
   std::vector<int> activeJointIndices; // A vector of the same size as the number of joints, with 1 for
                                        // estimated joints and 0 for non-estimated joints
   int actuatedDofNumber = 0;
 
-  bool robotIsFloatingBase;
-  int dofNumber;
-  int counter;
-  double dt;
-  bool verbose;
-  bool isActive;
+  bool robotIsFloatingBase = false;
+  int dofNumber = 0;
+  int counter = 0;
+  double dt = 0.0;
+  bool verbose = false;
+  bool isActive = true;
 
-  double residualGains;
+  double residualGains = 0.0;
   std::string referenceFrame;
 
   rbd::Jacobian jac;
-  rbd::Coriolis * coriolis;
+  std::unique_ptr<rbd::Coriolis> coriolis;
   rbd::ForwardDynamics forwardDynamics;
 
   Eigen::VectorXd pzero;
@@ -83,7 +99,6 @@ private:
   Eigen::VectorXd integralTermWithRotorInertia;
 
   Eigen::VectorXd FTSensorTorques;
-  Eigen::VectorXd prevFTSensorTorques;
   Eigen::VectorXd filteredFTSensorTorques;
   Eigen::VectorXd newExternalTorques;
   Eigen::VectorXd externalTorques;
@@ -100,19 +115,12 @@ private:
   double residualSpeedGain;
 
   // Force sensor
-  bool use_force_sensor_;
-  TorqueSourceType tau_mes_src_;
+  bool use_force_sensor_ = false;
+  TorqueSourceType tau_mes_src_ = TorqueSourceType::JointTorqueMeasurement;
 
   std::string ft_sensor_name_;
 
   // Floating base residual computation
-  Eigen::VectorXd internalResidual;
-  Eigen::Vector6d externalResidual;
-  Eigen::MatrixXd prevH;
-  Eigen::MatrixXd prevF;
-  Eigen::MatrixXd prevI_c_0;
-  Eigen::MatrixXd mimicExclusion;
-
   std::vector<sva::ForceVecd> EstimationAtFTSensors;
 
   // Custom forward dynamic calculation
@@ -124,8 +132,6 @@ private:
   Eigen::MatrixXd Ic0d;
 
   Eigen::VectorXd c_hat;
-
-  Eigen::IOFormat format;
 
   // Logging
   Eigen::VectorXd alphas;
