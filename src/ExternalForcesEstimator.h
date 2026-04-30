@@ -51,28 +51,11 @@ struct ExternalForcesEstimator : public mc_control::GlobalPlugin
 
   ~ExternalForcesEstimator() override;
 
-  void computeForFixedBase(mc_control::MCGlobalController & controller);
-  void computeForFloatingBase(mc_control::MCGlobalController & controller);
-  void computeForFloatingBaseFullGeneralized(mc_control::MCGlobalController & controller);
-  void computeForFloatingBaseDecoupled(mc_control::MCGlobalController & controller);
   void computeForwardDynamic(mc_control::MCGlobalController & controller);
   void computeCHatPc0Hat(mc_control::MCGlobalController & controller, const rbd::MultiBodyConfig & mbc);
   void addGui(mc_control::MCGlobalController & controller);
   void addLog(mc_control::MCGlobalController & controller);
   void removeLog(mc_control::MCGlobalController & controller);
-
-private:
-  struct ResidualObserverState
-  {
-    Eigen::VectorXd integralFull;
-    Eigen::VectorXd residualFull;
-    Eigen::VectorXd integralJoint;
-    Eigen::VectorXd jointResidual;
-    Eigen::VectorXd integralBase;
-    Eigen::VectorXd baseResidual;
-    Eigen::VectorXd rotorInertiaResidual;
-    Eigen::VectorXd rotorInertiaIntegral;
-  };
 
   struct ForceFusionState
   {
@@ -102,19 +85,83 @@ private:
     Eigen::VectorXd commandedAcceleration;
   };
 
+  struct EstimatorInputs
+  {
+    mc_control::MCGlobalController * controller = nullptr;
+    const mc_rbdyn::Robot * robot = nullptr;
+    const mc_rbdyn::Robot * realRobot = nullptr;
+    rbd::MultiBodyConfig mbc;
+    Eigen::VectorXd qdot;
+    Eigen::VectorXd tau;
+    Eigen::VectorXd commandedAcceleration;
+    Eigen::VectorXd gravity;
+    Eigen::MatrixXd coriolisMatrix;
+    int preservedPrefix = 0;
+    bool warnWhenInactive = false;
+    bool logPluginState = false;
+  };
+
+  struct EstimatorResult
+  {
+    Eigen::VectorXd torques;
+    Eigen::VectorXd accelerations;
+    ForceFusionState forceFusion;
+    std::vector<sva::ForceVecd> sensorEstimations;
+    int preservedPrefix = 0;
+    bool warnWhenInactive = false;
+    bool logPluginState = false;
+  };
+
+  EstimatorResult computeForFixedBase(mc_control::MCGlobalController & controller);
+  EstimatorResult computeForFloatingBase(mc_control::MCGlobalController & controller);
+  EstimatorResult computeForFloatingBaseFullGeneralized(mc_control::MCGlobalController & controller);
+  EstimatorResult computeForFloatingBaseDecoupled(mc_control::MCGlobalController & controller);
+
+private:
+  struct ResidualObserverState
+  {
+    Eigen::VectorXd integralFull;
+    Eigen::VectorXd residualFull;
+    Eigen::VectorXd integralJoint;
+    Eigen::VectorXd jointResidual;
+    Eigen::VectorXd integralBase;
+    Eigen::VectorXd baseResidual;
+    Eigen::VectorXd rotorInertiaResidual;
+    Eigen::VectorXd rotorInertiaIntegral;
+  };
+
   void initializeActiveJoints(const mc_rbdyn::Robot & robot);
   void loadConfiguration(const mc_rtc::Configuration & config);
   void initializeEstimatorState(const mc_rbdyn::Robot & robot, const Eigen::VectorXd & qdot);
+  EstimatorInputs buildEstimatorInputs(mc_control::MCGlobalController & controller,
+                                       int preservedPrefix,
+                                       bool warnWhenInactive,
+                                       bool logPluginState);
   rbd::MultiBodyConfig prepareRuntimeInputs(const mc_rbdyn::Robot & robot,
                                             const mc_rbdyn::Robot & realRobot,
                                             int preservedPrefix,
                                             Eigen::VectorXd & qdot,
                                             Eigen::VectorXd & tau);
+  void updateDiagnostics(const EstimatorInputs & inputs);
   Eigen::VectorXd readMeasuredTorque(const mc_rbdyn::Robot & robot,
                                      const mc_rbdyn::Robot & realRobot,
                                      int preservedPrefix) const;
   bool updatePluginActivation(mc_control::MCGlobalController & controller) const;
   void updateSpeedResidualDatastore(mc_control::MCGlobalController & controller);
+  void applyEstimatorResult(const EstimatorResult & result);
+  ForceFusionState computeFixedBaseForceFusion(const mc_rbdyn::Robot & robot,
+                                               const mc_rbdyn::Robot & realRobot,
+                                               const rbd::MultiBodyConfig & mbc,
+                                               const Eigen::VectorXd & jointResidual);
+  ForceFusionState computeFullGeneralizedForceFusion(const mc_rbdyn::Robot & robot,
+                                                     const rbd::MultiBodyConfig & mbc,
+                                                     const Eigen::VectorXd & activeResidual);
+  std::vector<sva::ForceVecd> estimateFloatingBaseSensorWrenches(const mc_rbdyn::Robot & robot,
+                                                                 const mc_rbdyn::Robot & realRobot,
+                                                                 const rbd::MultiBodyConfig & mbc,
+                                                                 const Eigen::MatrixXd & FT,
+                                                                 const Eigen::MatrixXd & I_c_0_inv,
+                                                                 const Eigen::VectorXd & residualFB) const;
   /** Write the estimated external torques and equivalent accelerations to both control and real robots. */
   void updateRobotExternalForces(mc_control::MCGlobalController & controller,
                                  const mc_rbdyn::Robot & robot,
