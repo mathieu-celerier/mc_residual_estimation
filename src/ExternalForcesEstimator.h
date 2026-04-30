@@ -77,6 +77,18 @@ struct ExternalForcesEstimator : public mc_control::GlobalPlugin
     Eigen::VectorXd integral;
   };
 
+  struct ResidualObserverState
+  {
+    Eigen::VectorXd integralFull;
+    Eigen::VectorXd residualFull;
+    Eigen::VectorXd integralJoint;
+    Eigen::VectorXd jointResidual;
+    Eigen::VectorXd integralBase;
+    Eigen::VectorXd baseResidual;
+    Eigen::VectorXd rotorInertiaResidual;
+    Eigen::VectorXd rotorInertiaIntegral;
+  };
+
   struct RuntimeDiagnostics
   {
     Eigen::VectorXd alphas;
@@ -105,8 +117,6 @@ struct ExternalForcesEstimator : public mc_control::GlobalPlugin
   {
     Eigen::VectorXd torques;
     Eigen::VectorXd accelerations;
-    ForceFusionState forceFusion;
-    std::vector<sva::ForceVecd> sensorEstimations;
     int preservedPrefix = 0;
     bool warnWhenInactive = false;
     bool logPluginState = false;
@@ -117,19 +127,20 @@ struct ExternalForcesEstimator : public mc_control::GlobalPlugin
   EstimatorResult computeForFloatingBaseFullGeneralized(mc_control::MCGlobalController & controller);
   EstimatorResult computeForFloatingBaseDecoupled(mc_control::MCGlobalController & controller);
 
-private:
-  struct ResidualObserverState
-  {
-    Eigen::VectorXd integralFull;
-    Eigen::VectorXd residualFull;
-    Eigen::VectorXd integralJoint;
-    Eigen::VectorXd jointResidual;
-    Eigen::VectorXd integralBase;
-    Eigen::VectorXd baseResidual;
-    Eigen::VectorXd rotorInertiaResidual;
-    Eigen::VectorXd rotorInertiaIntegral;
-  };
+  const ResidualObserverState & residualObserverState() const { return residualObserver_; }
+  const ForceFusionState & forceFusionState() const { return forceFusion_; }
+  const SpeedObserverState & speedObserverState() const { return speedObserver_; }
+  const RuntimeDiagnostics & diagnostics() const { return diagnostics_; }
+  const std::vector<sva::ForceVecd> & forceSensorEstimations() const { return EstimationAtFTSensors; }
+  const std::string & referenceFrameName() const { return referenceFrame; }
+  double gain() const { return residualGain; }
+  double residualSpeedGainValue() const { return residualSpeedGain; }
+  bool isEstimatorActive() const { return isActive; }
+  bool useForceSensor() const { return use_force_sensor_; }
+  int numberOfDofs() const { return dofNumber; }
+  bool floatingBaseRobot() const { return robotIsFloatingBase; }
 
+private:
   void initializeActiveJoints(const mc_rbdyn::Robot & robot);
   void loadConfiguration(const mc_rtc::Configuration & config);
   void initializeEstimatorState(const mc_rbdyn::Robot & robot, const Eigen::VectorXd & qdot);
@@ -137,6 +148,51 @@ private:
                                        int preservedPrefix,
                                        bool warnWhenInactive,
                                        bool logPluginState);
+  void updateFixedBaseResidualObserver(const Eigen::VectorXd & tauActive,
+                                       const Eigen::VectorXd & qdotActive,
+                                       const Eigen::VectorXd & coriolisGravityTerm,
+                                       const Eigen::MatrixXd & coriolisMatrixActive,
+                                       const Eigen::MatrixXd & inertiaMatrixActive,
+                                       double timestep);
+  void updateRotorInertiaResidual(const Eigen::VectorXd & tauActive,
+                                  const Eigen::VectorXd & qdotActive,
+                                  const Eigen::VectorXd & coriolisGravityTerm,
+                                  const Eigen::MatrixXd & coriolisMatrixActive,
+                                  const Eigen::MatrixXd & inertiaMatrixWithRotorInertia,
+                                  double timestep);
+  void updateSpeedResidualObserver(const Eigen::VectorXd & tauActive,
+                                   const Eigen::VectorXd & qdotActive,
+                                   const Eigen::VectorXd & coriolisGravityTerm,
+                                   const Eigen::MatrixXd & coriolisMatrixActive,
+                                   const Eigen::MatrixXd & inertiaMatrixActive,
+                                   double timestep);
+  void updateFullGeneralizedResidualObserver(const Eigen::VectorXd & tau,
+                                             const Eigen::VectorXd & qdot,
+                                             const Eigen::VectorXd & coriolisGravityTerm,
+                                             const Eigen::MatrixXd & coriolisMatrix,
+                                             const Eigen::MatrixXd & inertiaMatrix,
+                                             double timestep);
+  struct FloatingBaseCouplingTerms
+  {
+    Eigen::MatrixXd F;
+    Eigen::MatrixXd FT;
+    Eigen::MatrixXd Ic0;
+    Eigen::MatrixXd I_c_0_inv;
+    Eigen::MatrixXd Hfb;
+    Eigen::MatrixXd Hfbd;
+    Eigen::VectorXd Cfb;
+  };
+  FloatingBaseCouplingTerms computeFloatingBaseCouplingTerms(const Eigen::VectorXd & coriolisGravityTerm,
+                                                             const Eigen::MatrixXd & inertiaMatrix,
+                                                             const Eigen::MatrixXd & inertiaRateMatrix) const;
+  void updateDecoupledResidualObservers(const FloatingBaseCouplingTerms & couplingTerms,
+                                        const Eigen::VectorXd & tau,
+                                        const Eigen::VectorXd & tauJoint,
+                                        const Eigen::VectorXd & qdot,
+                                        const Eigen::VectorXd & qdotBase,
+                                        const Eigen::VectorXd & qdotJoint,
+                                        const Eigen::VectorXd & coriolisGravityTerm,
+                                        double timestep);
   rbd::MultiBodyConfig prepareRuntimeInputs(const mc_rbdyn::Robot & robot,
                                             const mc_rbdyn::Robot & realRobot,
                                             int preservedPrefix,
@@ -148,7 +204,6 @@ private:
                                      int preservedPrefix) const;
   bool updatePluginActivation(mc_control::MCGlobalController & controller) const;
   void updateSpeedResidualDatastore(mc_control::MCGlobalController & controller);
-  void applyEstimatorResult(const EstimatorResult & result);
   ForceFusionState computeFixedBaseForceFusion(const mc_rbdyn::Robot & robot,
                                                const mc_rbdyn::Robot & realRobot,
                                                const rbd::MultiBodyConfig & mbc,
@@ -231,5 +286,19 @@ private:
   Eigen::VectorXd c_hat;
   RuntimeDiagnostics diagnostics_;
 };
+
+struct EstimatorBackend
+{
+  virtual ~EstimatorBackend() = default;
+  virtual const char * name() const = 0;
+  virtual ExternalForcesEstimator::EstimatorResult run(ExternalForcesEstimator & estimator,
+                                                       mc_control::MCGlobalController & controller) = 0;
+  virtual void addToGui(ExternalForcesEstimator & estimator, mc_control::MCGlobalController & controller) = 0;
+  virtual void addToLogger(ExternalForcesEstimator & estimator, mc_control::MCGlobalController & controller) = 0;
+};
+
+std::unique_ptr<EstimatorBackend> makeFixedBaseEstimatorBackend();
+std::unique_ptr<EstimatorBackend> makeFloatingBaseFullGeneralizedBackend();
+std::unique_ptr<EstimatorBackend> makeFloatingBaseDecoupledBackend();
 
 } // namespace mc_plugin
