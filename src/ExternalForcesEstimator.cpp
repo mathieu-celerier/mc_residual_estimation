@@ -343,6 +343,21 @@ void ExternalForcesEstimator::resetResidualGain(double gain)
   residualGains = gain;
 }
 
+rbd::MultiBodyConfig ExternalForcesEstimator::prepareRuntimeInputs(const mc_rbdyn::Robot & robot,
+                                                                   const mc_rbdyn::Robot & realRobot,
+                                                                   int preservedPrefix,
+                                                                   Eigen::VectorXd & qdot,
+                                                                   Eigen::VectorXd & tau)
+{
+  auto mbc = robot.mbc();
+  qdot = rbd::dofToVector(robot.mb(), mbc.alpha);
+  zeroInactiveEntries(qdot, activeJointIndices, preservedPrefix);
+  mbc.alpha = rbd::vectorToDof(robot.mb(), qdot);
+  rbd::forwardVelocity(robot.mb(), mbc);
+  tau = readMeasuredTorque(robot, realRobot, preservedPrefix);
+  return mbc;
+}
+
 Eigen::VectorXd ExternalForcesEstimator::readMeasuredTorque(const mc_rbdyn::Robot & robot,
                                                             const mc_rbdyn::Robot & realRobot,
                                                             int preservedPrefix) const
@@ -416,6 +431,18 @@ bool ExternalForcesEstimator::updatePluginActivation(mc_control::MCGlobalControl
   return onePluginIsActive;
 }
 
+void ExternalForcesEstimator::updateSpeedResidualDatastore(mc_control::MCGlobalController & controller)
+{
+  if(!controller.controller().datastore().has(kSpeedResidualKey))
+  {
+    controller.controller().datastore().make<Eigen::VectorXd>(kSpeedResidualKey, residualSpeed);
+  }
+  else
+  {
+    controller.controller().datastore().assign(kSpeedResidualKey, residualSpeed);
+  }
+}
+
 void ExternalForcesEstimator::publishExternalTorqueState(mc_control::MCGlobalController & controller,
                                                          const mc_rbdyn::Robot & robot,
                                                          const mc_rbdyn::Robot & realRobot,
@@ -439,6 +466,44 @@ void ExternalForcesEstimator::clearExternalTorqueState(mc_control::MCGlobalContr
   controller.controller().robot().setExternalTorquesAcc(zero);
   controller.controller().realRobot().setExternalTorques(Eigen::VectorXd::Zero(realRobot.mb().nrDof()));
   controller.controller().realRobot().setExternalTorquesAcc(Eigen::VectorXd::Zero(realRobot.mb().nrDof()));
+}
+
+void ExternalForcesEstimator::finalizeExternalTorqueComputation(mc_control::MCGlobalController & controller,
+                                                                const mc_rbdyn::Robot & robot,
+                                                                const mc_rbdyn::Robot & realRobot,
+                                                                Eigen::VectorXd torques,
+                                                                Eigen::VectorXd accelerations,
+                                                                int preservedPrefix,
+                                                                bool warnWhenInactive,
+                                                                bool logPluginState)
+{
+  zeroInactiveEntries(torques, activeJointIndices, preservedPrefix);
+  zeroInactiveEntries(accelerations, activeJointIndices, preservedPrefix);
+
+  if(warnWhenInactive)
+  {
+    counter++;
+  }
+
+  const bool onePluginIsActive = updatePluginActivation(controller);
+  if(isActive)
+  {
+    publishExternalTorqueState(controller, robot, realRobot, torques, accelerations);
+  }
+  else if(!onePluginIsActive)
+  {
+    clearExternalTorqueState(controller, realRobot);
+    if(warnWhenInactive && counter == 1)
+    {
+      mc_rtc::log::warning("External force feedback inactive");
+    }
+  }
+  else if(logPluginState)
+  {
+    const auto & extTorquePlugin = controller.controller().datastore().get<std::vector<std::string>>(kPluginRegistryKey);
+    mc_rtc::log::info("[mc_residual] isActive = {}, onePluginIsActive = {}, extTorquePlugin = {}", isActive,
+                      onePluginIsActive, fmt::join(extTorquePlugin, ","));
+  }
 }
 
 void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, const mc_rtc::Configuration & config)
@@ -536,13 +601,8 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
   auto & robot = ctl.controller().robot();
   auto & realRobot = ctl.controller().realRobot(ctl.controller().robots()[0].name());
 
-  Eigen::VectorXd qdot(dofNumber);
-  auto mbc = robot.mbc();
-  qdot = rbd::dofToVector(robot.mb(), mbc.alpha);
-  zeroInactiveEntries(qdot, activeJointIndices, 0);
-  mbc.alpha = rbd::vectorToDof(robot.mb(), qdot);
-  rbd::forwardVelocity(robot.mb(), mbc);
-  Eigen::VectorXd tau = readMeasuredTorque(robot, realRobot, 0);
+  Eigen::VectorXd qdot(dofNumber), tau(dofNumber);
+  auto mbc = prepareRuntimeInputs(robot, realRobot, 0, qdot, tau);
 
   auto R = robot.bodyPosW(referenceFrame).rotation();
 
@@ -573,14 +633,7 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
   integralTermSpeed +=
       (tauActive + coriolisMatrixActive * qdotActive - coriolisGravityTerm + residualSpeed) * ctl.timestep();
   residualSpeed = residualSpeedGain * (pt - integralTermSpeed + pzero);
-  if(!ctl.controller().datastore().has(kSpeedResidualKey))
-  {
-    ctl.controller().datastore().make<Eigen::VectorXd>(kSpeedResidualKey, residualSpeed);
-  }
-  else
-  {
-    ctl.controller().datastore().assign(kSpeedResidualKey, residualSpeed);
-  }
+  updateSpeedResidualDatastore(ctl);
 
   auto jTranspose = jac.jacobian(robot.mb(), mbc);
   jTranspose.transposeInPlace();
@@ -626,37 +679,7 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
 
   Eigen::VectorXd externalAccelerations = Eigen::VectorXd::Zero(dofNumber);
   externalAccelerations = forwardDynamics.H().ldlt().solve(externalTorques);
-  zeroInactiveEntries(externalTorques, activeJointIndices, 0);
-  zeroInactiveEntries(externalAccelerations, activeJointIndices, 0);
-
-  counter++;
-  const bool onePluginIsActive = updatePluginActivation(ctl);
-
-  if(isActive)
-  {
-    for(int i = 0; i < externalTorques.size(); i++)
-    {
-      int idx = i;
-      // If the joint is not estimated, set the external torque to zero
-      if(std::find(activeJointIndices.begin(), activeJointIndices.end(), idx) == activeJointIndices.end())
-      {
-        externalTorques[idx] = 0.0;
-      }
-    }
-
-    publishExternalTorqueState(ctl, robot, realRobot, externalTorques, externalAccelerations);
-  }
-  else if(!onePluginIsActive)
-  {
-    clearExternalTorqueState(ctl, realRobot);
-    if(counter == 1) mc_rtc::log::warning("External force feedback inactive");
-  }
-  else
-  {
-    const auto & extTorquePlugin = ctl.controller().datastore().get<std::vector<std::string>>(kPluginRegistryKey);
-    mc_rtc::log::info("[mc_residual] isActive = {}, onePluginIsActive = {}, extTorquePlugin = {}", isActive,
-                      onePluginIsActive, fmt::join(extTorquePlugin, ","));
-  }
+  finalizeExternalTorqueComputation(ctl, robot, realRobot, externalTorques, externalAccelerations, 0, true, true);
 }
 
 void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalController & controller)
@@ -666,13 +689,8 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
   auto & robot = ctl.controller().robot();
   auto & realRobot = ctl.controller().realRobot(ctl.controller().robots()[0].name());
 
-  Eigen::VectorXd qdot(dofNumber), tau_joint(actuatedDofNumber);
-  auto mbc = robot.mbc();
-  qdot.setZero();
-  qdot = rbd::dofToVector(robot.mb(), mbc.alpha);
-  zeroInactiveEntries(qdot, activeJointIndices, 6);
-  mbc.alpha = rbd::vectorToDof(robot.mb(), qdot);
-  rbd::forwardVelocity(robot.mb(), mbc);
+  Eigen::VectorXd qdot(dofNumber), tau(dofNumber), tau_joint(actuatedDofNumber);
+  auto mbc = prepareRuntimeInputs(robot, realRobot, 6, qdot, tau);
   // mc_rtc::log::info("alpha = {}", qdot.transpose());
   // qdot.setZero();
   // qdot.tail(dofNumber - 6) =
@@ -680,7 +698,6 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
   // mc_rtc::log::info("encoderVelocities = {}", qdot.transpose());
   alphas = qdot;
   tau_joint.setZero();
-  auto tau = readMeasuredTorque(robot, realRobot, 6);
   tau_joint = selectEntries(tau, activeJointIndices);
   inputTorque = tau;
   commandedAcceleration = rbd::dofToVector(robot.mb(), robot.alphaD());
@@ -833,21 +850,8 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
   // mc_rtc::log::info("dofNumber = {}", dofNumber);
   // mc_rtc::log::info("Hfb: rows = {}, cols = {}", Hfb.rows(), Hfb.cols());
   externalAccelerations = H.ldlt().solve(externalTorques);
-  zeroInactiveEntries(externalTorques, activeJointIndices, 6);
-  zeroInactiveEntries(externalAccelerations, activeJointIndices, 6);
   // std::cout << "Equivalent Acc = \n" << externalAccelerations.transpose() << std::endl;
-
-  const bool onePluginIsActive = updatePluginActivation(ctl);
-
-  if(isActive)
-  {
-    publishExternalTorqueState(ctl, robot, realRobot, externalTorques, externalAccelerations);
-  }
-  else if(!onePluginIsActive)
-  {
-    clearExternalTorqueState(ctl, realRobot);
-    if(counter == 1) mc_rtc::log::warning("External force feedback inactive");
-  }
+  finalizeExternalTorqueComputation(ctl, robot, realRobot, externalTorques, externalAccelerations, 6, false, false);
 }
 
 void ExternalForcesEstimator::computeForwardDynamic(mc_control::MCGlobalController & controller)

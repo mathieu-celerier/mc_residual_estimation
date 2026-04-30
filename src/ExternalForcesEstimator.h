@@ -55,10 +55,16 @@ private:
   void initializeActiveJoints(const mc_rbdyn::Robot & robot);
   void loadConfiguration(const mc_rtc::Configuration & config);
   void initializeEstimatorState(const mc_rbdyn::Robot & robot, const Eigen::VectorXd & qdot);
+  rbd::MultiBodyConfig prepareRuntimeInputs(const mc_rbdyn::Robot & robot,
+                                            const mc_rbdyn::Robot & realRobot,
+                                            int preservedPrefix,
+                                            Eigen::VectorXd & qdot,
+                                            Eigen::VectorXd & tau);
   Eigen::VectorXd readMeasuredTorque(const mc_rbdyn::Robot & robot,
                                      const mc_rbdyn::Robot & realRobot,
                                      int preservedPrefix) const;
   bool updatePluginActivation(mc_control::MCGlobalController & controller) const;
+  void updateSpeedResidualDatastore(mc_control::MCGlobalController & controller);
   void publishExternalTorqueState(mc_control::MCGlobalController & controller,
                                   const mc_rbdyn::Robot & robot,
                                   const mc_rbdyn::Robot & realRobot,
@@ -66,6 +72,14 @@ private:
                                   const Eigen::VectorXd & accelerations);
   void clearExternalTorqueState(mc_control::MCGlobalController & controller,
                                 const mc_rbdyn::Robot & realRobot) const;
+  void finalizeExternalTorqueComputation(mc_control::MCGlobalController & controller,
+                                         const mc_rbdyn::Robot & robot,
+                                         const mc_rbdyn::Robot & realRobot,
+                                         Eigen::VectorXd torques,
+                                         Eigen::VectorXd accelerations,
+                                         int preservedPrefix,
+                                         bool warnWhenInactive,
+                                         bool logPluginState);
   void resetResidualGain(double gain);
 
   std::vector<int> activeJointIndices; // A vector of the same size as the number of joints, with 1 for
