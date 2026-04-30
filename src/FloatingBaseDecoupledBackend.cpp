@@ -6,19 +6,205 @@
 namespace mc_plugin
 {
 
+namespace detail
+{
+
+inline void computeForwardDynamicFlacco(const mc_rbdyn::Robot & robot,
+                                        const rbd::MultiBodyConfig & mbc,
+                                        Eigen::MatrixXd & H,
+                                        Eigen::MatrixXd & Hd)
+{
+  const auto & mb = robot.mb();
+  std::vector<sva::RBInertiad> I_st_(static_cast<size_t>(mb.nrBodies()));
+  std::vector<Eigen::Matrix6d> Id_st_(static_cast<size_t>(mb.nrBodies()));
+  std::vector<Eigen::Matrix6d> Xd_p_vec(static_cast<size_t>(mb.nrBodies()));
+  std::vector<Eigen::Matrix<double, 6, Eigen::Dynamic>> F_(static_cast<size_t>(mb.nrJoints()));
+  std::vector<Eigen::Matrix<double, 6, Eigen::Dynamic>> Fd_(static_cast<size_t>(mb.nrJoints()));
+  std::vector<int> dofPos_(static_cast<size_t>(mb.nrJoints()));
+
+  int dofP = 0;
+  for(int i = 0; i < mb.nrJoints(); ++i)
+  {
+    const auto ui = static_cast<size_t>(i);
+    F_[ui].resize(6, mb.joint(i).dof());
+    Fd_[ui].resize(6, mb.joint(i).dof());
+    dofPos_[ui] = dofP;
+    dofP += mb.joint(i).dof();
+  }
+
+  const std::vector<rbd::Body> & bodies = mb.bodies();
+  const std::vector<rbd::Joint> & joints = mb.joints();
+  const std::vector<int> & pred = mb.predecessors();
+
+  H.setZero(mb.nrDof(), mb.nrDof());
+  Hd.setZero(mb.nrDof(), mb.nrDof());
+  for(std::size_t i = 0; i < bodies.size(); ++i)
+  {
+    const auto ui = static_cast<size_t>(i);
+    const sva::PTransformd & X_p_i = mbc.parentToSon[ui];
+    Xd_p_vec[ui] = -sva::vector6ToCrossMatrix(mbc.jointVelocity[ui].vector()) * X_p_i.matrix();
+    I_st_[i] = bodies[i].inertia();
+    Id_st_[i].setZero();
+  }
+
+  for(int i = static_cast<int>(bodies.size()) - 1; i >= 0; --i)
+  {
+    const auto ui = static_cast<size_t>(i);
+    if(pred[ui] != -1)
+    {
+      const sva::PTransformd & X_p_i = mbc.parentToSon[ui];
+      Eigen::Matrix6d Xd_p_i = Xd_p_vec[ui];
+      I_st_[static_cast<size_t>(pred[ui])] += X_p_i.transMul(I_st_[ui]);
+      Id_st_[static_cast<size_t>(pred[ui])] += X_p_i.matrix().transpose() * Id_st_[ui] * X_p_i.matrix()
+                                               + Xd_p_i.transpose() * I_st_[ui].matrix() * X_p_i.matrix()
+                                               + X_p_i.matrix().transpose() * I_st_[ui].matrix() * Xd_p_i;
+    }
+
+    for(int dof = 0; dof < joints[ui].dof(); ++dof)
+    {
+      F_[ui].col(dof).noalias() = (I_st_[ui] * sva::MotionVecd(mbc.motionSubspace[ui].col(dof))).vector();
+      Fd_[ui].col(dof).noalias() = Id_st_[ui] * mbc.motionSubspace[ui].col(dof);
+    }
+
+    H.block(dofPos_[ui], dofPos_[ui], joints[ui].dof(), joints[ui].dof()).noalias() =
+        mbc.motionSubspace[ui].transpose() * F_[ui];
+    Hd.block(dofPos_[ui], dofPos_[ui], joints[ui].dof(), joints[ui].dof()).noalias() =
+        mbc.motionSubspace[ui].transpose() * Fd_[ui];
+
+    size_t j = ui;
+    while(pred[j] != -1)
+    {
+      const sva::PTransformd & X_p_j = mbc.parentToSon[j];
+      const Eigen::Matrix6d & Xd_p_j = Xd_p_vec[j];
+      for(int dof = 0; dof < joints[ui].dof(); ++dof)
+      {
+        F_[ui].col(dof) = X_p_j.transMul(sva::ForceVecd(F_[ui].col(dof))).vector();
+        Fd_[ui].col(dof) =
+            X_p_j.transMul(sva::ForceVecd(Fd_[ui].col(dof))).vector() + Xd_p_j.transpose() * F_[ui].col(dof);
+      }
+      j = static_cast<size_t>(pred[j]);
+
+      if(joints[j].dof() != 0)
+      {
+        H.block(dofPos_[ui], dofPos_[j], joints[ui].dof(), joints[j].dof()).noalias() =
+            F_[ui].transpose() * mbc.motionSubspace[j];
+        Hd.block(dofPos_[ui], dofPos_[j], joints[ui].dof(), joints[j].dof()).noalias() =
+            Fd_[ui].transpose() * mbc.motionSubspace[j];
+
+        H.block(dofPos_[j], dofPos_[ui], joints[j].dof(), joints[ui].dof()).noalias() =
+            H.block(dofPos_[ui], dofPos_[j], joints[ui].dof(), joints[j].dof()).transpose();
+        Hd.block(dofPos_[j], dofPos_[ui], joints[j].dof(), joints[ui].dof()).noalias() =
+            Hd.block(dofPos_[ui], dofPos_[j], joints[ui].dof(), joints[j].dof()).transpose();
+      }
+    }
+  }
+
+  H.noalias() = H;
+}
+
+inline Eigen::VectorXd computeCHatPc0HatFlacco(const mc_rbdyn::Robot & robot, const rbd::MultiBodyConfig & mbc)
+{
+  const auto & mb = robot.mb();
+  Eigen::VectorXd c_hat = Eigen::VectorXd::Zero(mb.nrDof());
+  std::vector<sva::MotionVecd> acc_(static_cast<size_t>(mb.nrBodies()));
+  std::vector<sva::ForceVecd> f_(static_cast<size_t>(mb.nrBodies()));
+  std::vector<int> dofPos_(static_cast<size_t>(mb.nrJoints()));
+
+  int dofP = 0;
+  for(int i = 0; i < mb.nrJoints(); ++i)
+  {
+    const auto ui = static_cast<size_t>(i);
+    dofPos_[ui] = dofP;
+    dofP += mb.joint(i).dof();
+  }
+
+  const std::vector<rbd::Body> & bodies = mb.bodies();
+  const std::vector<rbd::Joint> & joints = mb.joints();
+  const std::vector<int> & pred = mb.predecessors();
+
+  sva::MotionVecd a_0(Eigen::Vector3d::Zero(), mbc.gravity);
+
+  for(std::size_t i = 0; i < bodies.size(); ++i)
+  {
+    const sva::PTransformd & X_p_i = mbc.parentToSon[i];
+
+    const sva::MotionVecd & vj_i = mbc.jointVelocity[i];
+
+    const sva::MotionVecd & vb_i = mbc.bodyVelB[i];
+
+    if(pred[i] != -1)
+      acc_[i] = X_p_i * acc_[static_cast<size_t>(pred[i])] + vb_i.cross(vj_i);
+    else
+      acc_[i] = X_p_i * a_0 + vb_i.cross(vj_i);
+
+    f_[i] = bodies[i].inertia() * acc_[i] + vb_i.crossDual(bodies[i].inertia() * vb_i);
+  }
+
+  for(int i = static_cast<int>(bodies.size()) - 1; i >= 0; --i)
+  {
+    const auto ui = static_cast<size_t>(i);
+    c_hat.segment(dofPos_[ui], joints[ui].dof()).noalias() = mbc.motionSubspace[ui].transpose() * f_[ui].vector();
+
+    if(pred[ui] != -1)
+    {
+      const sva::PTransformd & X_p_i = mbc.parentToSon[ui];
+      f_[static_cast<size_t>(pred[ui])] += X_p_i.transMul(f_[ui]);
+    }
+  }
+
+  return c_hat;
+}
+
+inline std::vector<sva::ForceVecd> estimateFloatingBaseSensorWrenches(
+    const mc_rbdyn::Robot & robot,
+    const mc_rbdyn::Robot & realRobot,
+    const rbd::MultiBodyConfig & mbc,
+    int actuatedDofNumber,
+    int dofNumber,
+    const std::vector<int> & activeJointIndices,
+    const Eigen::MatrixXd & FT,
+    const Eigen::MatrixXd & I_c_0_inv,
+    const Eigen::VectorXd & residualFB)
+{
+  std::vector<sva::ForceVecd> estimations(static_cast<size_t>(realRobot.forceSensors().size()), sva::ForceVecd::Zero());
+  Eigen::MatrixXd augmented_Jfb_forces(6 + actuatedDofNumber, 6);
+
+  size_t fsi = 0;
+  for(auto & sensor : realRobot.forceSensors())
+  {
+    rbd::Jacobian jacobian_forces = rbd::Jacobian(robot.mb(), sensor.parentBody());
+    Eigen::MatrixXd Jac_forces = jacobian_forces.jacobian(robot.mb(), mbc, realRobot.posW());
+    Eigen::MatrixXd fullJac_forces(6, dofNumber);
+    jacobian_forces.fullJacobian(robot.mb(), Jac_forces, fullJac_forces);
+    Eigen::MatrixXd Jfb_forces_T = selectCols(fullJac_forces, activeJointIndices).transpose() - FT * I_c_0_inv;
+    augmented_Jfb_forces.block(0, 0, 6, 6).setIdentity();
+    augmented_Jfb_forces.block(6, 0, actuatedDofNumber, 6) = Jfb_forces_T;
+    Eigen::VectorXd estimated_wrench_fb = augmented_Jfb_forces.completeOrthogonalDecomposition().solve(residualFB);
+    Eigen::VectorXd estimated_wrench = realRobot.posW().matrix().transpose() * estimated_wrench_fb;
+    estimations[fsi] = sva::ForceVecd(estimated_wrench);
+    fsi++;
+  }
+
+  return estimations;
+}
+
+} // namespace detail
+
 namespace
 {
 
 struct FloatingBaseDecoupledBackend final : EstimatorBackend
 {
   const char * name() const override { return "FloatingBaseDecoupled"; }
-  void addToGui(ExternalForcesEstimator & estimator, mc_control::MCGlobalController & controller) override;
-  void addToLogger(ExternalForcesEstimator & estimator, mc_control::MCGlobalController & controller) override;
+  void addToGui(ExternalForcesEstimator::EstimatorData & data,
+                mc_control::MCGlobalController & controller) override;
+  void addToLogger(ExternalForcesEstimator::EstimatorData & data,
+                   mc_control::MCGlobalController & controller) override;
 
-  ExternalForcesEstimator::EstimatorResult run(ExternalForcesEstimator & estimator,
+  ExternalForcesEstimator::EstimatorResult run(ExternalForcesEstimator::EstimatorData & data,
                                                mc_control::MCGlobalController & controller) override
   {
-    return estimator.computeForFloatingBaseDecoupled(controller);
+    return data.owner->computeForFloatingBaseDecoupled(data, controller);
   }
 };
 
@@ -29,7 +215,7 @@ std::unique_ptr<EstimatorBackend> makeFloatingBaseDecoupledBackend()
   return std::make_unique<FloatingBaseDecoupledBackend>();
 }
 
-void FloatingBaseDecoupledBackend::addToGui(ExternalForcesEstimator & estimator,
+void FloatingBaseDecoupledBackend::addToGui(ExternalForcesEstimator::EstimatorData & data,
                                             mc_control::MCGlobalController & controller)
 {
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
@@ -40,11 +226,11 @@ void FloatingBaseDecoupledBackend::addToGui(ExternalForcesEstimator & estimator,
   ctl.controller().gui()->addElement({"Plugins", "External forces estimator"},
                                      mc_rtc::gui::Force(
                                          "EndEffector", fConf,
-                                         [&estimator]() { return estimator.forceFusionState().fusedWrench; },
-                                         [&controller, &estimator]()
+                                         [&data]() { return data.forceEffects->fusedWrench; },
+                                         [&controller, &data]()
                                          {
                                            auto transform = controller.robot().bodyPosW(
-                                               controller.robot().frame(estimator.referenceFrameName()).body());
+                                               controller.robot().frame(*data.referenceFrame).body());
                                            return transform;
                                          }));
 
@@ -52,11 +238,11 @@ void FloatingBaseDecoupledBackend::addToGui(ExternalForcesEstimator & estimator,
   ctl.controller().gui()->addElement({"Plugins", "External forces estimator"},
                                      mc_rtc::gui::Force(
                                          "EndEffector Residual", fConf,
-                                         [&estimator]() { return estimator.forceFusionState().residualWrench; },
-                                         [&controller, &estimator]()
+                                         [&data]() { return data.forceEffects->residualWrench; },
+                                         [&controller, &data]()
                                          {
                                            auto transform = controller.robot().bodyPosW(
-                                               controller.robot().frame(estimator.referenceFrameName()).body());
+                                               controller.robot().frame(*data.referenceFrame).body());
                                            return transform;
                                          }));
 
@@ -64,15 +250,15 @@ void FloatingBaseDecoupledBackend::addToGui(ExternalForcesEstimator & estimator,
   ctl.controller().gui()->addElement({"Plugins", "External forces estimator"},
                                      mc_rtc::gui::Force(
                                          "EndEffector F/T sensor", fConf,
-                                         [&estimator]()
+                                         [&data]()
                                          {
-                                           const auto & sensor = estimator.forceFusionState().sensorWrench;
+                                           const auto & sensor = data.forceEffects->sensorWrench;
                                            return sva::ForceVecd(sensor.segment(0, 3), sensor.segment(3, 3));
                                          },
-                                         [&controller, &estimator]()
+                                         [&controller, &data]()
                                          {
                                            auto transform = controller.robot().bodyPosW(
-                                               controller.robot().frame(estimator.referenceFrameName()).body());
+                                               controller.robot().frame(*data.referenceFrame).body());
                                            return transform;
                                          }));
 
@@ -83,45 +269,45 @@ void FloatingBaseDecoupledBackend::addToGui(ExternalForcesEstimator & estimator,
     ctl.controller().gui()->addElement({"Plugins", "External forces estimator"},
                                        mc_rtc::gui::Force(
                                            fmt::format("Estimation at {}", sensor.name()), fConf,
-                                           [&estimator, fsi]() { return estimator.forceSensorEstimations()[fsi]; },
+                                           [&data, fsi]() { return data.forceEffects->sensorForceEstimations[fsi]; },
                                            [&controller, sensor]()
                                            { return controller.realRobot().bodyPosW(sensor.parent()); }));
     fsi++;
   }
 }
 
-void FloatingBaseDecoupledBackend::addToLogger(ExternalForcesEstimator & estimator,
+void FloatingBaseDecoupledBackend::addToLogger(ExternalForcesEstimator::EstimatorData & data,
                                                mc_control::MCGlobalController & controller)
 {
   auto & logger = controller.controller().logger();
-  logger.addLogEntry("ExternalForceEstimator_wrench", &estimator,
-                     [&estimator]() { return estimator.forceFusionState().fusedWrench; });
-  logger.addLogEntry("ExternalForceEstimator_non_filtered_wrench", &estimator,
-                     [&estimator]() { return estimator.forceFusionState().unfilteredWrench; });
-  logger.addLogEntry("ExternalForceEstimator_residual_joint_torque", &estimator,
-                     [&estimator]() { return estimator.residualObserverState().jointResidual; });
-  logger.addLogEntry("ExternalForceEstimator_external_residual_joint_torque", &estimator,
-                     [&estimator]() -> Eigen::Vector6d { return estimator.residualObserverState().baseResidual; });
-  logger.addLogEntry("ExternalForceEstimator_residual_wrench", &estimator,
-                     [&estimator]() { return estimator.forceFusionState().residualWrench; });
-  logger.addLogEntry("ExternalForceEstimator_integralTerm", &estimator,
-                     [&estimator]() { return estimator.residualObserverState().integralJoint; });
-  logger.addLogEntry("ExternalForceEstimator_FTSensor_filtered_torque", &estimator,
-                     [&estimator]() { return estimator.forceFusionState().filteredSensorTorques; });
-  logger.addLogEntry("ExternalForceEstimator_FTSensor_filtered_wrench", &estimator,
-                     [&estimator]() { return estimator.forceFusionState().filteredSensorWrench; });
-  logger.addLogEntry("ExternalForceEstimator_FTSensor_torque", &estimator,
-                     [&estimator]() { return estimator.forceFusionState().sensorTorques; });
-  logger.addLogEntry("ExternalForceEstimator_FTSensor_wrench", &estimator,
-                     [&estimator]() { return estimator.forceFusionState().sensorWrench; });
-  logger.addLogEntry("ExternalForceEstimator_non_filtered_torque_value", &estimator,
-                     [&estimator]() { return estimator.forceFusionState().fusedTorques; });
-  logger.addLogEntry("ExternalForceEstimator_torque_value", &estimator,
-                     [&estimator]() { return estimator.forceFusionState().publishedTorques; });
-  logger.addLogEntry("ExternalForceEstimator_residualWithRotorInertia", &estimator,
-                     [&estimator]() { return estimator.residualObserverState().rotorInertiaResidual; });
-  logger.addLogEntry("ExternalForceEstimator_residualSpeed", &estimator,
-                     [&estimator]() { return estimator.speedObserverState().residual; });
+  logger.addLogEntry("ExternalForceEstimator_wrench", data.owner,
+                     [&data]() { return data.forceEffects->fusedWrench; });
+  logger.addLogEntry("ExternalForceEstimator_non_filtered_wrench", data.owner,
+                     [&data]() { return data.forceEffects->unfilteredWrench; });
+  logger.addLogEntry("ExternalForceEstimator_residual_joint_torque", data.owner,
+                     [&data]() { return data.residuals->jointResidual; });
+  logger.addLogEntry("ExternalForceEstimator_external_residual_joint_torque", data.owner,
+                     [&data]() -> Eigen::Vector6d { return data.residuals->baseResidual; });
+  logger.addLogEntry("ExternalForceEstimator_residual_wrench", data.owner,
+                     [&data]() { return data.forceEffects->residualWrench; });
+  logger.addLogEntry("ExternalForceEstimator_integralTerm", data.owner,
+                     [&data]() { return data.residuals->integralJoint; });
+  logger.addLogEntry("ExternalForceEstimator_FTSensor_filtered_torque", data.owner,
+                     [&data]() { return data.forceEffects->filteredSensorTorques; });
+  logger.addLogEntry("ExternalForceEstimator_FTSensor_filtered_wrench", data.owner,
+                     [&data]() { return data.forceEffects->filteredSensorWrench; });
+  logger.addLogEntry("ExternalForceEstimator_FTSensor_torque", data.owner,
+                     [&data]() { return data.forceEffects->sensorTorques; });
+  logger.addLogEntry("ExternalForceEstimator_FTSensor_wrench", data.owner,
+                     [&data]() { return data.forceEffects->sensorWrench; });
+  logger.addLogEntry("ExternalForceEstimator_non_filtered_torque_value", data.owner,
+                     [&data]() { return data.forceEffects->fusedTorques; });
+  logger.addLogEntry("ExternalForceEstimator_torque_value", data.owner,
+                     [&data]() { return data.forceEffects->publishedTorques; });
+  logger.addLogEntry("ExternalForceEstimator_residualWithRotorInertia", data.owner,
+                     [&data]() { return data.residuals->rotorInertiaResidual; });
+  logger.addLogEntry("ExternalForceEstimator_residualSpeed", data.owner,
+                     [&data]() { return data.speedResidual->residual; });
 }
 
 ExternalForcesEstimator::FloatingBaseCouplingTerms
@@ -158,26 +344,27 @@ void ExternalForcesEstimator::updateDecoupledResidualObservers(const FloatingBas
                                                                const Eigen::VectorXd & coriolisGravityTerm,
                                                                double timestep)
 {
-  residualObserver_.integralFull +=
-      (tau + Hd * qdot - coriolisGravityTerm + residualObserver_.residualFull) * timestep;
-  residualObserver_.residualFull = residualGain * (H * qdot - residualObserver_.integralFull);
+  residuals_.integralFull += (tau + Hd * qdot - coriolisGravityTerm + residuals_.residualFull) * timestep;
+  residuals_.residualFull = residualGain * (H * qdot - residuals_.integralFull);
 
-  residualObserver_.integralJoint +=
-      (tauJoint + couplingTerms.Hfbd * qdotJoint - couplingTerms.Cfb + residualObserver_.jointResidual) * timestep;
-  residualObserver_.jointResidual = residualGain * (couplingTerms.Hfb * qdotJoint - residualObserver_.integralJoint);
+  residuals_.integralJoint +=
+      (tauJoint + couplingTerms.Hfbd * qdotJoint - couplingTerms.Cfb + residuals_.jointResidual) * timestep;
+  residuals_.jointResidual = residualGain * (couplingTerms.Hfb * qdotJoint - residuals_.integralJoint);
 
   const auto inertiaRateMatrix = Hd.topLeftCorner(6, 6);
   const auto forceRateMatrix = detail::selectCols(Hd.topRows(6), activeJointIndices);
-  residualObserver_.integralBase +=
-      (inertiaRateMatrix * qdotBase + forceRateMatrix * qdotJoint - coriolisGravityTerm.head(6) + residualObserver_.baseResidual)
+  residuals_.integralBase +=
+      (inertiaRateMatrix * qdotBase + forceRateMatrix * qdotJoint - coriolisGravityTerm.head(6) + residuals_.baseResidual)
       * timestep;
-  residualObserver_.baseResidual =
-      residualGain * (couplingTerms.Ic0 * qdotBase + couplingTerms.F * qdotJoint - residualObserver_.integralBase);
+  residuals_.baseResidual =
+      residualGain * (couplingTerms.Ic0 * qdotBase + couplingTerms.F * qdotJoint - residuals_.integralBase);
 }
 
 ExternalForcesEstimator::EstimatorResult
-ExternalForcesEstimator::computeForFloatingBaseDecoupled(mc_control::MCGlobalController & controller)
+ExternalForcesEstimator::computeForFloatingBaseDecoupled(EstimatorData & data,
+                                                         mc_control::MCGlobalController & controller)
 {
+  static_cast<void>(data);
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
   auto inputs = buildEstimatorInputs(ctl, 6, false, false);
   updateDiagnostics(inputs);
@@ -213,29 +400,30 @@ ExternalForcesEstimator::computeForFloatingBaseDecoupled(mc_control::MCGlobalCon
                                    coriolisGravityTerm, ctl.timestep());
 
   Eigen::VectorXd residualFB(6 + actuatedDofNumber);
-  residualFB.head(6) = residualObserver_.baseResidual;
-  residualFB.tail(actuatedDofNumber) = residualObserver_.jointResidual;
+  residualFB.head(6) = residuals_.baseResidual;
+  residualFB.tail(actuatedDofNumber) = residuals_.jointResidual;
 
   Eigen::VectorXd residual = Eigen::VectorXd::Zero(dofNumber);
-  residual.head(6) = residualObserver_.baseResidual;
-  residual += detail::scatterEntries(residualObserver_.jointResidual
-                                         + couplingTerms.FT * couplingTerms.I_c_0_inv * residualObserver_.baseResidual,
+  residual.head(6) = residuals_.baseResidual;
+  residual += detail::scatterEntries(residuals_.jointResidual
+                                         + couplingTerms.FT * couplingTerms.I_c_0_inv * residuals_.baseResidual,
                                      activeJointIndices, dofNumber);
 
   EstimatorResult result;
   result.preservedPrefix = inputs.preservedPrefix;
   result.warnWhenInactive = inputs.warnWhenInactive;
   result.logPluginState = inputs.logPluginState;
-  EstimationAtFTSensors =
-      estimateFloatingBaseSensorWrenches(*inputs.robot, *inputs.realRobot, inputs.mbc, couplingTerms.FT,
-                                         couplingTerms.I_c_0_inv, residualFB);
+  forceEffects_.sensorForceEstimations =
+      detail::estimateFloatingBaseSensorWrenches(*inputs.robot, *inputs.realRobot, inputs.mbc, actuatedDofNumber,
+                                                 dofNumber, activeJointIndices, couplingTerms.FT,
+                                                 couplingTerms.I_c_0_inv, residualFB);
   result.torques = residual;
   result.accelerations = H.ldlt().solve(result.torques);
-  forceFusion_.sensorTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
-  forceFusion_.filteredSensorTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
-  forceFusion_.fusedTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
-  forceFusion_.filteredPublishedTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
-  forceFusion_.publishedTorques = result.torques;
+  forceEffects_.sensorTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
+  forceEffects_.filteredSensorTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
+  forceEffects_.fusedTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
+  forceEffects_.filteredPublishedTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
+  forceEffects_.publishedTorques = result.torques;
   return result;
 }
 

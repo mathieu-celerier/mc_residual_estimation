@@ -49,6 +49,36 @@ namespace mc_plugin
 
 struct EstimatorBackend;
 
+struct PluginData
+{
+  std::unique_ptr<EstimatorBackend> backend;
+  std::vector<int> activeJointIndices; // A vector of the same size as the number of joints, with 1 for
+                                       // estimated joints and 0 for non-estimated joints
+  int actuatedDofNumber = 0;
+
+  bool robotIsFloatingBase = false;
+  int dofNumber = 0;
+  int counter = 0;
+  double dt = 0.0;
+  bool verbose = false;
+  bool isActive = true;
+
+  double residualGain = 0.0;
+  std::string referenceFrame;
+
+  // Used for collision avoidance observer, not for the control
+  double residualSpeedGain = 0.0;
+
+  // Force sensor
+  bool use_force_sensor_ = false;
+  TorqueSourceType tau_mes_src_ = TorqueSourceType::JointTorqueMeasurement;
+  FloatingBaseMode floating_base_mode_ = FloatingBaseMode::Decoupled;
+  ForwardDynamicsMode forward_dynamics_mode_ = ForwardDynamicsMode::Classical;
+  BiasTermMode bias_term_mode_ = BiasTermMode::Classical;
+
+  std::string ft_sensor_name_;
+};
+
 struct ExternalForcesEstimator : public mc_control::GlobalPlugin
 {
   void init(mc_control::MCGlobalController & controller, const mc_rtc::Configuration & config) override;
@@ -67,7 +97,7 @@ struct ExternalForcesEstimator : public mc_control::GlobalPlugin
   void addLog(mc_control::MCGlobalController & controller);
   void removeLog(mc_control::MCGlobalController & controller);
 
-  struct ForceFusionState
+  struct ForceEffectsData
   {
     Eigen::VectorXd sensorTorques;
     Eigen::VectorXd filteredSensorTorques;
@@ -79,15 +109,16 @@ struct ExternalForcesEstimator : public mc_control::GlobalPlugin
     sva::ForceVecd unfilteredWrench = sva::ForceVecd::Zero();
     sva::ForceVecd filteredSensorWrench = sva::ForceVecd::Zero();
     Eigen::Vector6d sensorWrench = Eigen::Vector6d::Zero();
+    std::vector<sva::ForceVecd> sensorForceEstimations;
   };
 
-  struct SpeedObserverState
+  struct SpeedResidualData
   {
     Eigen::VectorXd residual;
     Eigen::VectorXd integral;
   };
 
-  struct ResidualObserverState
+  struct ResidualData
   {
     Eigen::VectorXd integralFull;
     Eigen::VectorXd residualFull;
@@ -132,16 +163,58 @@ struct ExternalForcesEstimator : public mc_control::GlobalPlugin
     bool logPluginState = false;
   };
 
-  EstimatorResult computeForFixedBase(mc_control::MCGlobalController & controller);
-  EstimatorResult computeForFloatingBase(mc_control::MCGlobalController & controller);
-  EstimatorResult computeForFloatingBaseFullGeneralized(mc_control::MCGlobalController & controller);
-  EstimatorResult computeForFloatingBaseDecoupled(mc_control::MCGlobalController & controller);
+  struct EstimatorData
+  {
+    ExternalForcesEstimator * owner = nullptr;
+    ResidualData * residuals = nullptr;
+    ForceEffectsData * forceEffects = nullptr;
+    SpeedResidualData * speedResidual = nullptr;
+    RuntimeDiagnostics * diagnostics = nullptr;
+    rbd::Jacobian * jac = nullptr;
+    rbd::ForwardDynamics * forwardDynamics = nullptr;
+    Eigen::VectorXd * pzero = nullptr;
+    std::vector<int> * activeJointIndices = nullptr;
+    int * actuatedDofNumber = nullptr;
+    int * dofNumber = nullptr;
+    int * counter = nullptr;
+    double * dt = nullptr;
+    bool * robotIsFloatingBase = nullptr;
+    bool * verbose = nullptr;
+    bool * isActive = nullptr;
+    double * residualGain = nullptr;
+    std::string * referenceFrame = nullptr;
+    double * residualSpeedGain = nullptr;
+    bool * use_force_sensor_ = nullptr;
+    TorqueSourceType * tau_mes_src_ = nullptr;
+    FloatingBaseMode * floating_base_mode_ = nullptr;
+    ForwardDynamicsMode * forward_dynamics_mode_ = nullptr;
+    BiasTermMode * bias_term_mode_ = nullptr;
+    std::string * ft_sensor_name_ = nullptr;
+  };
 
-  const ResidualObserverState & residualObserverState() const { return residualObserver_; }
-  const ForceFusionState & forceFusionState() const { return forceFusion_; }
-  const SpeedObserverState & speedObserverState() const { return speedObserver_; }
+  EstimatorData estimatorData()
+  {
+    return EstimatorData{this, &residuals_,        &forceEffects_,          &speedResidual_,    &diagnostics_,
+                         &jac,  &forwardDynamics,   &pzero,                  &activeJointIndices, &actuatedDofNumber,
+                         &dofNumber, &counter,       &dt,                     &robotIsFloatingBase,
+                         &verbose, &isActive,        &residualGain,           &referenceFrame,    &residualSpeedGain,
+                         &use_force_sensor_,         &tau_mes_src_,           &floating_base_mode_,
+                         &forward_dynamics_mode_,    &bias_term_mode_,        &ft_sensor_name_};
+  }
+
+  EstimatorResult computeForFixedBase(EstimatorData & data, mc_control::MCGlobalController & controller);
+  EstimatorResult computeForFloatingBaseFullGeneralized(EstimatorData & data,
+                                                        mc_control::MCGlobalController & controller);
+  EstimatorResult computeForFloatingBaseDecoupled(EstimatorData & data, mc_control::MCGlobalController & controller);
+
+  const ResidualData & residualData() const { return residuals_; }
+  const ForceEffectsData & forceEffectsData() const { return forceEffects_; }
+  const SpeedResidualData & speedResidualData() const { return speedResidual_; }
+  const ResidualData & residualObserverState() const { return residuals_; }
+  const ForceEffectsData & forceFusionState() const { return forceEffects_; }
+  const SpeedResidualData & speedObserverState() const { return speedResidual_; }
   const RuntimeDiagnostics & diagnostics() const { return diagnostics_; }
-  const std::vector<sva::ForceVecd> & forceSensorEstimations() const { return EstimationAtFTSensors; }
+  const std::vector<sva::ForceVecd> & forceSensorEstimations() const { return forceEffects_.sensorForceEstimations; }
   const std::string & referenceFrameName() const { return referenceFrame; }
   double gain() const { return residualGain; }
   double residualSpeedGainValue() const { return residualSpeedGain; }
@@ -216,19 +289,6 @@ private:
                                      int preservedPrefix) const;
   bool updatePluginActivation(mc_control::MCGlobalController & controller) const;
   void updateSpeedResidualDatastore(mc_control::MCGlobalController & controller);
-  ForceFusionState computeFixedBaseForceFusion(const mc_rbdyn::Robot & robot,
-                                               const mc_rbdyn::Robot & realRobot,
-                                               const rbd::MultiBodyConfig & mbc,
-                                               const Eigen::VectorXd & jointResidual);
-  ForceFusionState computeFullGeneralizedForceFusion(const mc_rbdyn::Robot & robot,
-                                                     const rbd::MultiBodyConfig & mbc,
-                                                     const Eigen::VectorXd & activeResidual);
-  std::vector<sva::ForceVecd> estimateFloatingBaseSensorWrenches(const mc_rbdyn::Robot & robot,
-                                                                 const mc_rbdyn::Robot & realRobot,
-                                                                 const rbd::MultiBodyConfig & mbc,
-                                                                 const Eigen::MatrixXd & FT,
-                                                                 const Eigen::MatrixXd & I_c_0_inv,
-                                                                 const Eigen::VectorXd & residualFB) const;
   /** Write the estimated external torques and equivalent accelerations to both control and real robots. */
   void updateRobotExternalForces(mc_control::MCGlobalController & controller,
                                  const mc_rbdyn::Robot & robot,
@@ -249,45 +309,41 @@ private:
                              bool logPluginState);
   void resetResidualGain(double gain);
 
-  std::unique_ptr<EstimatorBackend> backend_;
+  PluginData pluginData_;
+  std::unique_ptr<EstimatorBackend> & backend_ = pluginData_.backend;
+  std::vector<int> & activeJointIndices = pluginData_.activeJointIndices;
+  int & actuatedDofNumber = pluginData_.actuatedDofNumber;
 
-  std::vector<int> activeJointIndices; // A vector of the same size as the number of joints, with 1 for
-                                       // estimated joints and 0 for non-estimated joints
-  int actuatedDofNumber = 0;
+  bool & robotIsFloatingBase = pluginData_.robotIsFloatingBase;
+  int & dofNumber = pluginData_.dofNumber;
+  int & counter = pluginData_.counter;
+  double & dt = pluginData_.dt;
+  bool & verbose = pluginData_.verbose;
+  bool & isActive = pluginData_.isActive;
 
-  bool robotIsFloatingBase = false;
-  int dofNumber = 0;
-  int counter = 0;
-  double dt = 0.0;
-  bool verbose = false;
-  bool isActive = true;
-
-  double residualGain = 0.0;
-  std::string referenceFrame;
+  double & residualGain = pluginData_.residualGain;
+  std::string & referenceFrame = pluginData_.referenceFrame;
 
   rbd::Jacobian jac;
   std::unique_ptr<rbd::Coriolis> coriolis;
   rbd::ForwardDynamics forwardDynamics;
 
   Eigen::VectorXd pzero;
-  ResidualObserverState residualObserver_;
-  ForceFusionState forceFusion_;
+  ResidualData residuals_;
+  ForceEffectsData forceEffects_;
 
   // Used for collision avoidance observer, not for the control
-  SpeedObserverState speedObserver_;
-  double residualSpeedGain;
+  SpeedResidualData speedResidual_;
+  double & residualSpeedGain = pluginData_.residualSpeedGain;
 
   // Force sensor
-  bool use_force_sensor_ = false;
-  TorqueSourceType tau_mes_src_ = TorqueSourceType::JointTorqueMeasurement;
-  FloatingBaseMode floating_base_mode_ = FloatingBaseMode::Decoupled;
-  ForwardDynamicsMode forward_dynamics_mode_ = ForwardDynamicsMode::Classical;
-  BiasTermMode bias_term_mode_ = BiasTermMode::Classical;
+  bool & use_force_sensor_ = pluginData_.use_force_sensor_;
+  TorqueSourceType & tau_mes_src_ = pluginData_.tau_mes_src_;
+  FloatingBaseMode & floating_base_mode_ = pluginData_.floating_base_mode_;
+  ForwardDynamicsMode & forward_dynamics_mode_ = pluginData_.forward_dynamics_mode_;
+  BiasTermMode & bias_term_mode_ = pluginData_.bias_term_mode_;
 
-  std::string ft_sensor_name_;
-
-  // Floating base residual computation
-  std::vector<sva::ForceVecd> EstimationAtFTSensors;
+  std::string & ft_sensor_name_ = pluginData_.ft_sensor_name_;
 
   // Custom forward dynamic calculation
   Eigen::MatrixXd H;
@@ -303,10 +359,11 @@ struct EstimatorBackend
 {
   virtual ~EstimatorBackend() = default;
   virtual const char * name() const = 0;
-  virtual ExternalForcesEstimator::EstimatorResult run(ExternalForcesEstimator & estimator,
+  virtual ExternalForcesEstimator::EstimatorResult run(ExternalForcesEstimator::EstimatorData & data,
                                                        mc_control::MCGlobalController & controller) = 0;
-  virtual void addToGui(ExternalForcesEstimator & estimator, mc_control::MCGlobalController & controller) = 0;
-  virtual void addToLogger(ExternalForcesEstimator & estimator, mc_control::MCGlobalController & controller) = 0;
+  virtual void addToGui(ExternalForcesEstimator::EstimatorData & data, mc_control::MCGlobalController & controller) = 0;
+  virtual void addToLogger(ExternalForcesEstimator::EstimatorData & data,
+                           mc_control::MCGlobalController & controller) = 0;
 };
 
 std::unique_ptr<EstimatorBackend> makeFixedBaseEstimatorBackend();

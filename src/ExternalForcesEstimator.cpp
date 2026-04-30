@@ -81,13 +81,13 @@ FloatingBaseMode parseFloatingBaseMode(const std::string & mode)
   {
     return FloatingBaseMode::Decoupled;
   }
-  if(mode == "FullGeneralized")
+  if(mode == "Default")
   {
     return FloatingBaseMode::FullGeneralized;
   }
   mc_rtc::log::error_and_throw<std::runtime_error>(
       "[ExternalForceEstimator] error in configuration with entry\"floating_base_mode\".\n\tPossible values are: "
-      "Decoupled, FullGeneralized");
+      "Decoupled, Default");
 }
 
 ForwardDynamicsMode parseForwardDynamicsMode(const std::string & mode)
@@ -204,32 +204,32 @@ void ExternalForcesEstimator::initializeEstimatorState(const mc_rbdyn::Robot & r
   auto inertiaMatrix = forwardDynamics.H() - forwardDynamics.HIr();
   pzero = selectEntries(inertiaMatrix * qdot, activeJointIndices);
 
-  residualObserver_.integralBase = Eigen::VectorXd::Zero(6);
-  residualObserver_.integralJoint = Eigen::VectorXd::Zero(actuatedDofNumber);
-  residualObserver_.jointResidual = Eigen::VectorXd::Zero(actuatedDofNumber);
-  residualObserver_.rotorInertiaIntegral = Eigen::VectorXd::Zero(actuatedDofNumber);
-  residualObserver_.baseResidual = Eigen::VectorXd::Zero(6);
-  residualObserver_.rotorInertiaResidual = Eigen::VectorXd::Zero(actuatedDofNumber);
-  forceFusion_.sensorTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
-  forceFusion_.filteredSensorTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
-  forceFusion_.fusedTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
-  forceFusion_.filteredPublishedTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
-  forceFusion_.fusedWrench = sva::ForceVecd::Zero();
-  forceFusion_.residualWrench = sva::ForceVecd::Zero();
-  forceFusion_.sensorWrench = Eigen::Vector6d::Zero();
-  residualObserver_.integralFull = Eigen::VectorXd::Zero(dofNumber);
-  residualObserver_.residualFull = Eigen::VectorXd::Zero(dofNumber);
-  speedObserver_.integral = Eigen::VectorXd::Zero(actuatedDofNumber);
-  speedObserver_.residual = Eigen::VectorXd::Zero(actuatedDofNumber);
-  EstimationAtFTSensors.assign(static_cast<size_t>(robot.forceSensors().size()), sva::ForceVecd::Zero());
+  residuals_.integralBase = Eigen::VectorXd::Zero(6);
+  residuals_.integralJoint = Eigen::VectorXd::Zero(actuatedDofNumber);
+  residuals_.jointResidual = Eigen::VectorXd::Zero(actuatedDofNumber);
+  residuals_.rotorInertiaIntegral = Eigen::VectorXd::Zero(actuatedDofNumber);
+  residuals_.baseResidual = Eigen::VectorXd::Zero(6);
+  residuals_.rotorInertiaResidual = Eigen::VectorXd::Zero(actuatedDofNumber);
+  residuals_.integralFull = Eigen::VectorXd::Zero(dofNumber);
+  residuals_.residualFull = Eigen::VectorXd::Zero(dofNumber);
+  forceEffects_.sensorTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
+  forceEffects_.filteredSensorTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
+  forceEffects_.fusedTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
+  forceEffects_.filteredPublishedTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
+  forceEffects_.fusedWrench = sva::ForceVecd::Zero();
+  forceEffects_.residualWrench = sva::ForceVecd::Zero();
+  forceEffects_.sensorWrench = Eigen::Vector6d::Zero();
+  forceEffects_.sensorForceEstimations.assign(static_cast<size_t>(robot.forceSensors().size()), sva::ForceVecd::Zero());
+  speedResidual_.integral = Eigen::VectorXd::Zero(actuatedDofNumber);
+  speedResidual_.residual = Eigen::VectorXd::Zero(actuatedDofNumber);
   counter = 0;
 }
 
 void ExternalForcesEstimator::resetResidualGain(double gain)
 {
-  residualObserver_.integralJoint.setZero();
-  residualObserver_.jointResidual.setZero();
-  forceFusion_.filteredSensorTorques.setZero();
+  residuals_.integralJoint.setZero();
+  residuals_.jointResidual.setZero();
+  forceEffects_.filteredSensorTorques.setZero();
   residualGain = gain;
 }
 
@@ -362,121 +362,12 @@ void ExternalForcesEstimator::updateSpeedResidualDatastore(mc_control::MCGlobalC
 {
   if(!controller.controller().datastore().has(kSpeedResidualKey))
   {
-    controller.controller().datastore().make<Eigen::VectorXd>(kSpeedResidualKey, speedObserver_.residual);
+    controller.controller().datastore().make<Eigen::VectorXd>(kSpeedResidualKey, speedResidual_.residual);
   }
   else
   {
-    controller.controller().datastore().assign(kSpeedResidualKey, speedObserver_.residual);
+    controller.controller().datastore().assign(kSpeedResidualKey, speedResidual_.residual);
   }
-}
-
-ExternalForcesEstimator::ForceFusionState ExternalForcesEstimator::computeFixedBaseForceFusion(
-    const mc_rbdyn::Robot & robot,
-    const mc_rbdyn::Robot & realRobot,
-    const rbd::MultiBodyConfig & mbc,
-    const Eigen::VectorXd & jointResidual)
-{
-  ForceFusionState fusion;
-  fusion.sensorTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
-  fusion.filteredSensorTorques = forceFusion_.filteredSensorTorques;
-  fusion.fusedTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
-  fusion.filteredPublishedTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
-  const auto R = robot.bodyPosW(referenceFrame).rotation();
-
-  auto jTranspose = jac.jacobian(robot.mb(), mbc);
-  jTranspose.transposeInPlace();
-  auto jTransposeActive = selectRows(jTranspose, activeJointIndices);
-  Eigen::VectorXd residualWrench = jTransposeActive.completeOrthogonalDecomposition().solve(jointResidual);
-  fusion.residualWrench = sva::ForceVecd(residualWrench);
-  fusion.residualWrench.force() = R * fusion.residualWrench.force();
-  fusion.residualWrench.couple() = R * fusion.residualWrench.couple();
-
-  if(use_force_sensor_ && ft_sensor_name_ != "none")
-  {
-    auto sva_EF_FT = realRobot.forceSensor(ft_sensor_name_).wrenchWithoutGravity(realRobot);
-    fusion.sensorWrench = sva_EF_FT.vector();
-    fusion.fusedWrench.force() = R.transpose() * sva_EF_FT.force();
-    fusion.fusedWrench.couple() = R.transpose() * sva_EF_FT.couple();
-    fusion.sensorTorques =
-        selectEntries(jac.jacobian(robot.mb(), mbc).transpose() * fusion.fusedWrench.vector(), activeJointIndices);
-    double alpha = 1 - exp(-dt * residualGain);
-    fusion.filteredSensorTorques += alpha * (fusion.sensorTorques - fusion.filteredSensorTorques);
-    fusion.fusedTorques = jointResidual + (fusion.sensorTorques - fusion.filteredSensorTorques);
-    fusion.filteredPublishedTorques = fusion.fusedTorques;
-    fusion.filteredSensorWrench =
-        sva::ForceVecd(jTransposeActive.completeOrthogonalDecomposition().solve(fusion.filteredSensorTorques));
-    fusion.filteredSensorWrench.force() = R * fusion.filteredSensorWrench.force();
-    fusion.filteredSensorWrench.couple() = R * fusion.filteredSensorWrench.couple();
-
-    fusion.unfilteredWrench =
-        sva::ForceVecd(jTransposeActive.completeOrthogonalDecomposition().solve(fusion.fusedTorques));
-    fusion.unfilteredWrench.force() = R * fusion.unfilteredWrench.force();
-    fusion.unfilteredWrench.couple() = R * fusion.unfilteredWrench.couple();
-    fusion.publishedTorques = scatterEntries(fusion.filteredPublishedTorques, activeJointIndices, dofNumber);
-  }
-  else
-  {
-    fusion.publishedTorques = scatterEntries(jointResidual, activeJointIndices, dofNumber);
-  }
-
-  auto activeExternalTorques = selectEntries(fusion.publishedTorques, activeJointIndices);
-  fusion.fusedWrench = sva::ForceVecd(jTransposeActive.completeOrthogonalDecomposition().solve(activeExternalTorques));
-  fusion.fusedWrench.force() = R * fusion.fusedWrench.force();
-  fusion.fusedWrench.couple() = R * fusion.fusedWrench.couple();
-  return fusion;
-}
-
-ExternalForcesEstimator::ForceFusionState ExternalForcesEstimator::computeFullGeneralizedForceFusion(
-    const mc_rbdyn::Robot & robot,
-    const rbd::MultiBodyConfig & mbc,
-    const Eigen::VectorXd & activeResidual)
-{
-  ForceFusionState fusion;
-  fusion.sensorTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
-  fusion.filteredSensorTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
-  const auto R = robot.bodyPosW(robot.frame(referenceFrame).body()).rotation();
-
-  auto jTranspose = jac.jacobian(robot.mb(), mbc);
-  jTranspose.transposeInPlace();
-  auto jTransposeActive = selectRows(jTranspose, activeJointIndices);
-  fusion.residualWrench = sva::ForceVecd(jTransposeActive.completeOrthogonalDecomposition().solve(activeResidual));
-  fusion.residualWrench.force() = R * fusion.residualWrench.force();
-  fusion.residualWrench.couple() = R * fusion.residualWrench.couple();
-  fusion.fusedWrench = fusion.residualWrench;
-  fusion.filteredPublishedTorques = activeResidual;
-  fusion.fusedTorques = activeResidual;
-  fusion.unfilteredWrench = fusion.residualWrench;
-  return fusion;
-}
-
-std::vector<sva::ForceVecd> ExternalForcesEstimator::estimateFloatingBaseSensorWrenches(
-    const mc_rbdyn::Robot & robot,
-    const mc_rbdyn::Robot & realRobot,
-    const rbd::MultiBodyConfig & mbc,
-    const Eigen::MatrixXd & FT,
-    const Eigen::MatrixXd & I_c_0_inv,
-    const Eigen::VectorXd & residualFB) const
-{
-  std::vector<sva::ForceVecd> estimations(static_cast<size_t>(realRobot.forceSensors().size()), sva::ForceVecd::Zero());
-  Eigen::MatrixXd augmented_Jfb_forces(6 + actuatedDofNumber, 6);
-
-  size_t fsi = 0;
-  for(auto & sensor : realRobot.forceSensors())
-  {
-    rbd::Jacobian jacobian_forces = rbd::Jacobian(robot.mb(), sensor.parentBody());
-    Eigen::MatrixXd Jac_forces = jacobian_forces.jacobian(robot.mb(), mbc, realRobot.posW());
-    Eigen::MatrixXd fullJac_forces(6, dofNumber);
-    jacobian_forces.fullJacobian(robot.mb(), Jac_forces, fullJac_forces);
-    Eigen::MatrixXd Jfb_forces_T = selectCols(fullJac_forces, activeJointIndices).transpose() - FT * I_c_0_inv;
-    augmented_Jfb_forces.block(0, 0, 6, 6).setIdentity();
-    augmented_Jfb_forces.block(6, 0, actuatedDofNumber, 6) = Jfb_forces_T;
-    Eigen::VectorXd estimated_wrench_fb = augmented_Jfb_forces.completeOrthogonalDecomposition().solve(residualFB);
-    Eigen::VectorXd estimated_wrench = realRobot.posW().matrix().transpose() * estimated_wrench_fb;
-    estimations[fsi] = sva::ForceVecd(estimated_wrench);
-    fsi++;
-  }
-
-  return estimations;
 }
 
 void ExternalForcesEstimator::updateRobotExternalForces(mc_control::MCGlobalController & controller,
@@ -586,7 +477,7 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
   initializeEstimatorState(robot, qdot);
 
   // Create datastore's entries to change modify parameters from code
-  ctl.controller().datastore().make<Eigen::VectorXd>(kResidualOnlyKey, residualObserver_.jointResidual);
+  ctl.controller().datastore().make<Eigen::VectorXd>(kResidualOnlyKey, residuals_.jointResidual);
 
   ctl.controller().datastore().make_call("EF_Estimator::isActive", [this]() { return this->isActive; });
   ctl.controller().datastore().make_call("EF_Estimator::toggleActive", [this]() { this->isActive = !this->isActive; });
@@ -618,7 +509,8 @@ void ExternalForcesEstimator::before(mc_control::MCGlobalController & controller
     return;
   }
 
-  auto result = backend_->run(*this, controller);
+  auto state = estimatorData();
+  auto result = backend_->run(state, controller);
   auto & robot = ctl.controller().robot();
   auto & realRobot = ctl.controller().realRobot(ctl.controller().robots()[0].name());
   resolveAndUpdateRobot(ctl, robot, realRobot, result.torques, result.accelerations, result.preservedPrefix,
@@ -658,8 +550,8 @@ void ExternalForcesEstimator::addGui(mc_control::MCGlobalController & controller
           {
             if(gainSpeed != residualSpeedGain)
             {
-              speedObserver_.integral.setZero();
-              speedObserver_.residual.setZero();
+              speedResidual_.integral.setZero();
+              speedResidual_.residual.setZero();
             }
             residualSpeedGain = gainSpeed;
           }),
@@ -667,7 +559,8 @@ void ExternalForcesEstimator::addGui(mc_control::MCGlobalController & controller
 
   if(backend_)
   {
-    backend_->addToGui(*this, controller);
+    auto state = estimatorData();
+    backend_->addToGui(state, controller);
   }
 }
 
@@ -683,7 +576,8 @@ void ExternalForcesEstimator::addLog(mc_control::MCGlobalController & controller
 
   if(backend_)
   {
-    backend_->addToLogger(*this, controller);
+    auto state = estimatorData();
+    backend_->addToLogger(state, controller);
   }
 }
 
