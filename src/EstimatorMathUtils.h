@@ -115,10 +115,16 @@ inline Eigen::VectorXd mapFullDofByJointName(const mc_rbdyn::Robot & sourceRobot
   for(int jIndex = sourceFloating ? 1 : 0; jIndex < sourceRobot.mb().nrJoints(); ++jIndex)
   {
     const auto & sourceJoint = sourceRobot.mb().joint(jIndex);
-    if(sourceJoint.dof() != 1 || !targetRobot.hasJoint(sourceJoint.name())) { continue; }
+    if(sourceJoint.dof() != 1 || !targetRobot.hasJoint(sourceJoint.name()))
+    {
+      continue;
+    }
     const auto targetIndex = targetRobot.mb().jointIndexByName(sourceJoint.name());
     const auto & targetJoint = targetRobot.mb().joint(targetIndex);
-    if(targetJoint.dof() != 1) { continue; }
+    if(targetJoint.dof() != 1)
+    {
+      continue;
+    }
     const auto sourceOffset = jointDofOffset(sourceRobot.mb(), jIndex);
     const auto targetOffset = jointDofOffset(targetRobot.mb(), targetIndex);
     if(sourceOffset < raw.size() && targetOffset < fullSize)
@@ -148,7 +154,10 @@ inline Eigen::VectorXd refJointOrderToFullDof(const mc_rbdyn::Robot & sourceRobo
     }
     const auto jointIndex = targetRobot.mb().jointIndexByName(jointName);
     const auto & joint = targetRobot.mb().joint(jointIndex);
-    if(joint.dof() != 1) { continue; }
+    if(joint.dof() != 1)
+    {
+      continue;
+    }
     out(jointDofOffset(targetRobot.mb(), jointIndex)) = raw(i);
   }
   return out;
@@ -186,6 +195,153 @@ inline Eigen::VectorXd sanitizeTorqueInput(const mc_rbdyn::Robot & sourceRobot,
   mc_rtc::log::error_and_throw<std::runtime_error>(
       "[ExternalForcesEstimator] Unexpected torque vector size {}, expected {}, {}, {} or {}", raw.size(), fullSize,
       activeIndices.size(), sourceRobot.mb().nrDof(), sourceRobot.refJointOrder().size());
+}
+
+inline void computeForwardDynamicFlacco(const mc_rbdyn::Robot & robot,
+                                        const rbd::MultiBodyConfig & mbc,
+                                        Eigen::MatrixXd & H,
+                                        Eigen::MatrixXd & Hd)
+{
+  const auto & mb = robot.mb();
+  std::vector<sva::RBInertiad> I_st_(static_cast<size_t>(mb.nrBodies()));
+  std::vector<Eigen::Matrix6d> Id_st_(static_cast<size_t>(mb.nrBodies()));
+  std::vector<Eigen::Matrix6d> Xd_p_vec(static_cast<size_t>(mb.nrBodies()));
+  std::vector<Eigen::Matrix<double, 6, Eigen::Dynamic>> F_(static_cast<size_t>(mb.nrJoints()));
+  std::vector<Eigen::Matrix<double, 6, Eigen::Dynamic>> Fd_(static_cast<size_t>(mb.nrJoints()));
+  std::vector<int> dofPos_(static_cast<size_t>(mb.nrJoints()));
+
+  int dofP = 0;
+  for(int i = 0; i < mb.nrJoints(); ++i)
+  {
+    const auto ui = static_cast<size_t>(i);
+    F_[ui].resize(6, mb.joint(i).dof());
+    Fd_[ui].resize(6, mb.joint(i).dof());
+    dofPos_[ui] = dofP;
+    dofP += mb.joint(i).dof();
+  }
+
+  const std::vector<rbd::Body> & bodies = mb.bodies();
+  const std::vector<rbd::Joint> & joints = mb.joints();
+  const std::vector<int> & pred = mb.predecessors();
+
+  H.setZero(mb.nrDof(), mb.nrDof());
+  Hd.setZero(mb.nrDof(), mb.nrDof());
+  for(std::size_t i = 0; i < bodies.size(); ++i)
+  {
+    const auto ui = static_cast<size_t>(i);
+    const sva::PTransformd & X_p_i = mbc.parentToSon[ui];
+    Xd_p_vec[ui] = -sva::vector6ToCrossMatrix(mbc.jointVelocity[ui].vector()) * X_p_i.matrix();
+    I_st_[i] = bodies[i].inertia();
+    Id_st_[i].setZero();
+  }
+
+  for(int i = static_cast<int>(bodies.size()) - 1; i >= 0; --i)
+  {
+    const auto ui = static_cast<size_t>(i);
+    if(pred[ui] != -1)
+    {
+      const sva::PTransformd & X_p_i = mbc.parentToSon[ui];
+      Eigen::Matrix6d Xd_p_i = Xd_p_vec[ui];
+      I_st_[static_cast<size_t>(pred[ui])] += X_p_i.transMul(I_st_[ui]);
+      Id_st_[static_cast<size_t>(pred[ui])] += X_p_i.matrix().transpose() * Id_st_[ui] * X_p_i.matrix()
+                                               + Xd_p_i.transpose() * I_st_[ui].matrix() * X_p_i.matrix()
+                                               + X_p_i.matrix().transpose() * I_st_[ui].matrix() * Xd_p_i;
+    }
+
+    for(int dof = 0; dof < joints[ui].dof(); ++dof)
+    {
+      F_[ui].col(dof).noalias() = (I_st_[ui] * sva::MotionVecd(mbc.motionSubspace[ui].col(dof))).vector();
+      Fd_[ui].col(dof).noalias() = Id_st_[ui] * mbc.motionSubspace[ui].col(dof);
+    }
+
+    H.block(dofPos_[ui], dofPos_[ui], joints[ui].dof(), joints[ui].dof()).noalias() =
+        mbc.motionSubspace[ui].transpose() * F_[ui];
+    Hd.block(dofPos_[ui], dofPos_[ui], joints[ui].dof(), joints[ui].dof()).noalias() =
+        mbc.motionSubspace[ui].transpose() * Fd_[ui];
+
+    size_t j = ui;
+    while(pred[j] != -1)
+    {
+      const sva::PTransformd & X_p_j = mbc.parentToSon[j];
+      const Eigen::Matrix6d & Xd_p_j = Xd_p_vec[j];
+      for(int dof = 0; dof < joints[ui].dof(); ++dof)
+      {
+        F_[ui].col(dof) = X_p_j.transMul(sva::ForceVecd(F_[ui].col(dof))).vector();
+        Fd_[ui].col(dof) =
+            X_p_j.transMul(sva::ForceVecd(Fd_[ui].col(dof))).vector() + Xd_p_j.transpose() * F_[ui].col(dof);
+      }
+      j = static_cast<size_t>(pred[j]);
+
+      if(joints[j].dof() != 0)
+      {
+        H.block(dofPos_[ui], dofPos_[j], joints[ui].dof(), joints[j].dof()).noalias() =
+            F_[ui].transpose() * mbc.motionSubspace[j];
+        Hd.block(dofPos_[ui], dofPos_[j], joints[ui].dof(), joints[j].dof()).noalias() =
+            Fd_[ui].transpose() * mbc.motionSubspace[j];
+
+        H.block(dofPos_[j], dofPos_[ui], joints[j].dof(), joints[ui].dof()).noalias() =
+            H.block(dofPos_[ui], dofPos_[j], joints[ui].dof(), joints[j].dof()).transpose();
+        Hd.block(dofPos_[j], dofPos_[ui], joints[j].dof(), joints[ui].dof()).noalias() =
+            Hd.block(dofPos_[ui], dofPos_[j], joints[ui].dof(), joints[j].dof()).transpose();
+      }
+    }
+  }
+
+  H.noalias() = H;
+}
+
+inline Eigen::VectorXd computeCHatPc0HatFlacco(const mc_rbdyn::Robot & robot, const rbd::MultiBodyConfig & mbc)
+{
+  const auto & mb = robot.mb();
+  Eigen::VectorXd c_hat = Eigen::VectorXd::Zero(mb.nrDof());
+  std::vector<sva::MotionVecd> acc_(static_cast<size_t>(mb.nrBodies()));
+  std::vector<sva::ForceVecd> f_(static_cast<size_t>(mb.nrBodies()));
+  std::vector<int> dofPos_(static_cast<size_t>(mb.nrJoints()));
+
+  int dofP = 0;
+  for(int i = 0; i < mb.nrJoints(); ++i)
+  {
+    const auto ui = static_cast<size_t>(i);
+    dofPos_[ui] = dofP;
+    dofP += mb.joint(i).dof();
+  }
+
+  const std::vector<rbd::Body> & bodies = mb.bodies();
+  const std::vector<rbd::Joint> & joints = mb.joints();
+  const std::vector<int> & pred = mb.predecessors();
+
+  sva::MotionVecd a_0(Eigen::Vector3d::Zero(), mbc.gravity);
+
+  for(std::size_t i = 0; i < bodies.size(); ++i)
+  {
+    const sva::PTransformd & X_p_i = mbc.parentToSon[i];
+
+    const sva::MotionVecd & vj_i = mbc.jointVelocity[i];
+
+    const sva::MotionVecd & vb_i = mbc.bodyVelB[i];
+
+    if(pred[i] != -1)
+      acc_[i] = X_p_i * acc_[static_cast<size_t>(pred[i])] + vb_i.cross(vj_i);
+    else
+      acc_[i] = X_p_i * a_0 + vb_i.cross(vj_i);
+
+    f_[i] = bodies[i].inertia() * acc_[i] + vb_i.crossDual(bodies[i].inertia() * vb_i);
+  }
+
+  for(int i = static_cast<int>(bodies.size()) - 1; i >= 0; --i)
+  {
+    const auto ui = static_cast<size_t>(i);
+    c_hat.segment(dofPos_[ui], joints[ui].dof()).noalias() = mbc.motionSubspace[ui].transpose() * f_[ui].vector();
+
+    if(pred[ui] != -1)
+    {
+      const sva::PTransformd & X_p_i = mbc.parentToSon[ui];
+      f_[static_cast<size_t>(pred[ui])] += X_p_i.transMul(f_[ui]);
+    }
+  }
+
+  // mc_rtc::log::info("C hat = {}", c_hat.transpose());
+  return c_hat;
 }
 
 } // namespace mc_plugin::detail

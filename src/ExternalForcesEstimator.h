@@ -32,6 +32,18 @@ enum class FloatingBaseMode
   Decoupled,
 };
 
+enum class ForwardDynamicsMode
+{
+  Classical,
+  Flacco,
+};
+
+enum class BiasTermMode
+{
+  Classical,
+  Flacco,
+};
+
 namespace mc_plugin
 {
 
@@ -51,8 +63,6 @@ struct ExternalForcesEstimator : public mc_control::GlobalPlugin
 
   ~ExternalForcesEstimator() override;
 
-  void computeForwardDynamic(mc_control::MCGlobalController & controller);
-  void computeCHatPc0Hat(mc_control::MCGlobalController & controller, const rbd::MultiBodyConfig & mbc);
   void addGui(mc_control::MCGlobalController & controller);
   void addLog(mc_control::MCGlobalController & controller);
   void removeLog(mc_control::MCGlobalController & controller);
@@ -139,6 +149,8 @@ struct ExternalForcesEstimator : public mc_control::GlobalPlugin
   bool useForceSensor() const { return use_force_sensor_; }
   int numberOfDofs() const { return dofNumber; }
   bool floatingBaseRobot() const { return robotIsFloatingBase; }
+  ForwardDynamicsMode forwardDynamicsMode() const { return forward_dynamics_mode_; }
+  BiasTermMode biasTermMode() const { return bias_term_mode_; }
 
 private:
   void initializeActiveJoints(const mc_rbdyn::Robot & robot);
@@ -269,6 +281,8 @@ private:
   bool use_force_sensor_ = false;
   TorqueSourceType tau_mes_src_ = TorqueSourceType::JointTorqueMeasurement;
   FloatingBaseMode floating_base_mode_ = FloatingBaseMode::Decoupled;
+  ForwardDynamicsMode forward_dynamics_mode_ = ForwardDynamicsMode::Classical;
+  BiasTermMode bias_term_mode_ = BiasTermMode::Classical;
 
   std::string ft_sensor_name_;
 
@@ -282,8 +296,6 @@ private:
   Eigen::MatrixXd Hd;
   Eigen::MatrixXd Fd;
   Eigen::MatrixXd Ic0d;
-
-  Eigen::VectorXd c_hat;
   RuntimeDiagnostics diagnostics_;
 };
 

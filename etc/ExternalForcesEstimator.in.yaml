@@ -6,6 +6,8 @@
 # use_force_sensor: false
 # torque_source_type: JointTorqueMeasurement
 # floating_base_mode: Decoupled
+# forward_dynamics_mode: Default
+# bias_term_mode: Default
 # residual_speed_gain: 100
 #
 # # KinovaGen3
@@ -16,6 +18,8 @@
 # use_force_sensor: true
 # torque_source_type: JointTorqueMeasurement
 # floating_base_mode: Decoupled
+# forward_dynamics_mode: Default
+# bias_term_mode: Default
 # residual_speed_gain: 100
 
 # # H1
@@ -26,6 +30,8 @@
 # use_force_sensor: false
 # torque_source_type: JointTorqueMeasurement
 # floating_base_mode: Decoupled
+# forward_dynamics_mode: Default
+# bias_term_mode: Default
 # residual_speed_gain: 100
 
 # # HRP5
@@ -35,6 +41,8 @@
 # use_force_sensor: true
 # torque_source_type: JointTorqueMeasurement
 # floating_base_mode: Decoupled
+# forward_dynamics_mode: Default
+# bias_term_mode: Default
 # residual_speed_gain: 100
 
 # Default
@@ -45,4 +53,6 @@ ft_sensor_name: ft_sensor
 use_force_sensor: true
 torque_source_type: JointTorqueMeasurement
 floating_base_mode: Decoupled
+forward_dynamics_mode: Default
+bias_term_mode: Default
 residual_speed_gain: 100

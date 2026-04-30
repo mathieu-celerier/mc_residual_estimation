@@ -51,6 +51,8 @@ Example:
 residual_gain: 10
 reference_frame: FT_sensor_wrench
 use_force_sensor: false
+forward_dynamics_mode: Default
+bias_term_mode: Default
 ros_force_sensor: true
 ```
 

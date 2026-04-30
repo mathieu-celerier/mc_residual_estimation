@@ -186,11 +186,26 @@ ExternalForcesEstimator::computeForFloatingBaseDecoupled(mc_control::MCGlobalCon
   const auto qdotBase = inputs.qdot.head(6);
   const auto qdotJoint = detail::selectEntries(inputs.qdot, activeJointIndices);
 
-  computeCHatPc0Hat(controller, inputs.mbc);
-  const auto coriolisGravityTerm = forwardDynamics.C();
+  Eigen::VectorXd coriolisGravityTerm;
 
-  H = forwardDynamics.H() - forwardDynamics.HIr();
-  Hd = inputs.coriolisMatrix + inputs.coriolisMatrix.transpose();
+  if(forward_dynamics_mode_ == ForwardDynamicsMode::Flacco)
+  {
+    detail::computeForwardDynamicFlacco(*inputs.robot, inputs.mbc, H, Hd);
+  }
+  else
+  {
+    H = forwardDynamics.H() - forwardDynamics.HIr();
+    Hd = inputs.coriolisMatrix + inputs.coriolisMatrix.transpose();
+  }
+
+  if(bias_term_mode_ == BiasTermMode::Flacco)
+  {
+    coriolisGravityTerm = detail::computeCHatPc0HatFlacco(*inputs.robot, inputs.mbc);
+  }
+  else
+  {
+    coriolisGravityTerm = forwardDynamics.C();
+  }
 
   const auto couplingTerms = computeFloatingBaseCouplingTerms(coriolisGravityTerm, H, Hd);
 

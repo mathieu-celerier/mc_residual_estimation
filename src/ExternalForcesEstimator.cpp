@@ -1,5 +1,4 @@
 #include "ExternalForcesEstimator.h"
-#include "EstimatorMathUtils.h"
 #include <mc_control/GlobalPluginMacros.h>
 #include <mc_control/mc_global_controller.h>
 #include <mc_rtc/logging.h>
@@ -7,6 +6,7 @@
 #include <SpaceVecAlg/EigenTypedef.h>
 #include <SpaceVecAlg/EigenUtility.h>
 #include <SpaceVecAlg/SpaceVecAlg>
+#include "EstimatorMathUtils.h"
 #include <Eigen/src/Core/Map.h>
 #include <Eigen/src/Core/Matrix.h>
 #include <algorithm>
@@ -38,6 +38,8 @@ struct EstimatorConfig
   bool useForceSensor = false;
   TorqueSourceType torqueSource = TorqueSourceType::JointTorqueMeasurement;
   FloatingBaseMode floatingBaseMode = FloatingBaseMode::Decoupled;
+  ForwardDynamicsMode forwardDynamicsMode = ForwardDynamicsMode::Classical;
+  BiasTermMode biasTermMode = BiasTermMode::Classical;
   double residualSpeedGain = 100.0;
 };
 
@@ -86,6 +88,36 @@ FloatingBaseMode parseFloatingBaseMode(const std::string & mode)
   mc_rtc::log::error_and_throw<std::runtime_error>(
       "[ExternalForceEstimator] error in configuration with entry\"floating_base_mode\".\n\tPossible values are: "
       "Decoupled, FullGeneralized");
+}
+
+ForwardDynamicsMode parseForwardDynamicsMode(const std::string & mode)
+{
+  if(mode.empty() || mode == "Default")
+  {
+    return ForwardDynamicsMode::Classical;
+  }
+  if(mode == "Flacco")
+  {
+    return ForwardDynamicsMode::Flacco;
+  }
+  mc_rtc::log::error_and_throw<std::runtime_error>(
+      "[ExternalForceEstimator] error in configuration with entry\"forward_dynamics_mode\".\n\tPossible values "
+      "are: Default, Flacco");
+}
+
+BiasTermMode parseBiasTermMode(const std::string & mode)
+{
+  if(mode.empty() || mode == "Default")
+  {
+    return BiasTermMode::Classical;
+  }
+  if(mode == "Flacco")
+  {
+    return BiasTermMode::Flacco;
+  }
+  mc_rtc::log::error_and_throw<std::runtime_error>(
+      "[ExternalForceEstimator] error in configuration with entry\"bias_term_mode\".\n\tPossible values are: "
+      "Default, Flacco");
 }
 
 } // namespace
@@ -146,6 +178,8 @@ void ExternalForcesEstimator::loadConfiguration(const mc_rtc::Configuration & co
   parsed.useForceSensor = config("use_force_sensor", false);
   parsed.torqueSource = parseTorqueSourceType(config("torque_source_type", std::string{}));
   parsed.floatingBaseMode = parseFloatingBaseMode(config("floating_base_mode", std::string{"Decoupled"}));
+  parsed.forwardDynamicsMode = parseForwardDynamicsMode(config("forward_dynamics_mode", std::string{"Default"}));
+  parsed.biasTermMode = parseBiasTermMode(config("bias_term_mode", std::string{"Default"}));
   parsed.residualSpeedGain = config("residual_speed_gain", 100.0);
 
   residualGain = parsed.residualGain;
@@ -155,6 +189,8 @@ void ExternalForcesEstimator::loadConfiguration(const mc_rtc::Configuration & co
   use_force_sensor_ = parsed.useForceSensor;
   tau_mes_src_ = parsed.torqueSource;
   floating_base_mode_ = parsed.floatingBaseMode;
+  forward_dynamics_mode_ = parsed.forwardDynamicsMode;
+  bias_term_mode_ = parsed.biasTermMode;
   residualSpeedGain = parsed.residualSpeedGain;
 }
 
@@ -197,11 +233,11 @@ void ExternalForcesEstimator::resetResidualGain(double gain)
   residualGain = gain;
 }
 
-ExternalForcesEstimator::EstimatorInputs
-ExternalForcesEstimator::buildEstimatorInputs(mc_control::MCGlobalController & controller,
-                                              int preservedPrefix,
-                                              bool warnWhenInactive,
-                                              bool logPluginState)
+ExternalForcesEstimator::EstimatorInputs ExternalForcesEstimator::buildEstimatorInputs(
+    mc_control::MCGlobalController & controller,
+    int preservedPrefix,
+    bool warnWhenInactive,
+    bool logPluginState)
 {
   auto & robot = controller.controller().robot();
   auto & realRobot = controller.controller().realRobot(controller.controller().robots()[0].name());
@@ -214,8 +250,8 @@ ExternalForcesEstimator::buildEstimatorInputs(mc_control::MCGlobalController & c
   inputs.warnWhenInactive = warnWhenInactive;
   inputs.logPluginState = logPluginState;
   inputs.mbc = prepareRuntimeInputs(robot, realRobot, preservedPrefix, inputs.qdot, inputs.tau);
-  inputs.commandedAcceleration = robotIsFloatingBase ? rbd::dofToVector(robot.mb(), robot.alphaD())
-                                                     : Eigen::VectorXd::Zero(dofNumber);
+  inputs.commandedAcceleration =
+      robotIsFloatingBase ? rbd::dofToVector(robot.mb(), robot.alphaD()) : Eigen::VectorXd::Zero(dofNumber);
   zeroInactiveEntries(inputs.commandedAcceleration, activeJointIndices, preservedPrefix);
 
   forwardDynamics.computeC(robot.mb(), inputs.mbc);
@@ -271,16 +307,16 @@ Eigen::VectorXd ExternalForcesEstimator::readMeasuredTorque(const mc_rbdyn::Robo
       {
         mc_rtc::log::error_and_throw<std::runtime_error>("Not implemented yet");
       }
-      return sanitizeTorqueInput(realRobot, robot,
-                                 Eigen::Map<const Eigen::VectorXd>(realRobot.jointTorques().data(),
-                                                                   realRobot.jointTorques().size())
-                                     * robot.mb().joint(robot.mb().nrJoints() - 1).gearRatio(),
-                                 activeJointIndices, dofNumber, preservedPrefix);
+      return sanitizeTorqueInput(
+          realRobot, robot,
+          Eigen::Map<const Eigen::VectorXd>(realRobot.jointTorques().data(), realRobot.jointTorques().size())
+              * robot.mb().joint(robot.mb().nrJoints() - 1).gearRatio(),
+          activeJointIndices, dofNumber, preservedPrefix);
     case TorqueSourceType::JointTorqueMeasurement:
-      return sanitizeTorqueInput(realRobot, robot,
-                                 Eigen::Map<const Eigen::VectorXd>(realRobot.jointTorques().data(),
-                                                                   realRobot.jointTorques().size()),
-                                 activeJointIndices, dofNumber, preservedPrefix);
+      return sanitizeTorqueInput(
+          realRobot, robot,
+          Eigen::Map<const Eigen::VectorXd>(realRobot.jointTorques().data(), realRobot.jointTorques().size()),
+          activeJointIndices, dofNumber, preservedPrefix);
   }
 
   mc_rtc::log::error_and_throw<std::runtime_error>("[ExternalForcesEstimator] Unsupported torque source type");
@@ -298,7 +334,8 @@ bool ExternalForcesEstimator::updatePluginActivation(mc_control::MCGlobalControl
   }
   else
   {
-    extTorquePlugin.erase(std::remove(extTorquePlugin.begin(), extTorquePlugin.end(), kPluginName), extTorquePlugin.end());
+    extTorquePlugin.erase(std::remove(extTorquePlugin.begin(), extTorquePlugin.end(), kPluginName),
+                          extTorquePlugin.end());
   }
 
   bool onePluginIsActive = !extTorquePlugin.empty();
@@ -333,11 +370,11 @@ void ExternalForcesEstimator::updateSpeedResidualDatastore(mc_control::MCGlobalC
   }
 }
 
-ExternalForcesEstimator::ForceFusionState
-ExternalForcesEstimator::computeFixedBaseForceFusion(const mc_rbdyn::Robot & robot,
-                                                     const mc_rbdyn::Robot & realRobot,
-                                                     const rbd::MultiBodyConfig & mbc,
-                                                     const Eigen::VectorXd & jointResidual)
+ExternalForcesEstimator::ForceFusionState ExternalForcesEstimator::computeFixedBaseForceFusion(
+    const mc_rbdyn::Robot & robot,
+    const mc_rbdyn::Robot & realRobot,
+    const rbd::MultiBodyConfig & mbc,
+    const Eigen::VectorXd & jointResidual)
 {
   ForceFusionState fusion;
   fusion.sensorTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
@@ -371,7 +408,8 @@ ExternalForcesEstimator::computeFixedBaseForceFusion(const mc_rbdyn::Robot & rob
     fusion.filteredSensorWrench.force() = R * fusion.filteredSensorWrench.force();
     fusion.filteredSensorWrench.couple() = R * fusion.filteredSensorWrench.couple();
 
-    fusion.unfilteredWrench = sva::ForceVecd(jTransposeActive.completeOrthogonalDecomposition().solve(fusion.fusedTorques));
+    fusion.unfilteredWrench =
+        sva::ForceVecd(jTransposeActive.completeOrthogonalDecomposition().solve(fusion.fusedTorques));
     fusion.unfilteredWrench.force() = R * fusion.unfilteredWrench.force();
     fusion.unfilteredWrench.couple() = R * fusion.unfilteredWrench.couple();
     fusion.publishedTorques = scatterEntries(fusion.filteredPublishedTorques, activeJointIndices, dofNumber);
@@ -388,10 +426,10 @@ ExternalForcesEstimator::computeFixedBaseForceFusion(const mc_rbdyn::Robot & rob
   return fusion;
 }
 
-ExternalForcesEstimator::ForceFusionState
-ExternalForcesEstimator::computeFullGeneralizedForceFusion(const mc_rbdyn::Robot & robot,
-                                                           const rbd::MultiBodyConfig & mbc,
-                                                           const Eigen::VectorXd & activeResidual)
+ExternalForcesEstimator::ForceFusionState ExternalForcesEstimator::computeFullGeneralizedForceFusion(
+    const mc_rbdyn::Robot & robot,
+    const rbd::MultiBodyConfig & mbc,
+    const Eigen::VectorXd & activeResidual)
 {
   ForceFusionState fusion;
   fusion.sensorTorques = Eigen::VectorXd::Zero(actuatedDofNumber);
@@ -411,13 +449,13 @@ ExternalForcesEstimator::computeFullGeneralizedForceFusion(const mc_rbdyn::Robot
   return fusion;
 }
 
-std::vector<sva::ForceVecd>
-ExternalForcesEstimator::estimateFloatingBaseSensorWrenches(const mc_rbdyn::Robot & robot,
-                                                            const mc_rbdyn::Robot & realRobot,
-                                                            const rbd::MultiBodyConfig & mbc,
-                                                            const Eigen::MatrixXd & FT,
-                                                            const Eigen::MatrixXd & I_c_0_inv,
-                                                            const Eigen::VectorXd & residualFB) const
+std::vector<sva::ForceVecd> ExternalForcesEstimator::estimateFloatingBaseSensorWrenches(
+    const mc_rbdyn::Robot & robot,
+    const mc_rbdyn::Robot & realRobot,
+    const rbd::MultiBodyConfig & mbc,
+    const Eigen::MatrixXd & FT,
+    const Eigen::MatrixXd & I_c_0_inv,
+    const Eigen::VectorXd & residualFB) const
 {
   std::vector<sva::ForceVecd> estimations(static_cast<size_t>(realRobot.forceSensors().size()), sva::ForceVecd::Zero());
   Eigen::MatrixXd augmented_Jfb_forces(6 + actuatedDofNumber, 6);
@@ -498,7 +536,8 @@ void ExternalForcesEstimator::resolveAndUpdateRobot(mc_control::MCGlobalControll
   }
   else if(logPluginState)
   {
-    const auto & extTorquePlugin = controller.controller().datastore().get<std::vector<std::string>>(kPluginRegistryKey);
+    const auto & extTorquePlugin =
+        controller.controller().datastore().get<std::vector<std::string>>(kPluginRegistryKey);
     mc_rtc::log::info("[mc_residual] isActive = {}, onePluginIsActive = {}, extTorquePlugin = {}", isActive,
                       onePluginIsActive, fmt::join(extTorquePlugin, ","));
   }
@@ -554,7 +593,8 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
   ctl.controller().datastore().make_call("EF_Estimator::useForceSensor", [this]() { return this->use_force_sensor_; });
   ctl.controller().datastore().make_call("EF_Estimator::toggleForceSensor",
                                          [this]() { this->use_force_sensor_ = !this->use_force_sensor_; });
-  ctl.controller().datastore().make_call("EF_Estimator::setGain", [this](double gain) { this->resetResidualGain(gain); });
+  ctl.controller().datastore().make_call("EF_Estimator::setGain",
+                                         [this](double gain) { this->resetResidualGain(gain); });
 
   addGui(controller);
   addLog(controller);
@@ -603,172 +643,27 @@ mc_control::GlobalPlugin::GlobalPluginConfiguration ExternalForcesEstimator::con
   return out;
 }
 
-void ExternalForcesEstimator::computeForwardDynamic(mc_control::MCGlobalController & controller)
-{
-  auto mb = controller.realRobot(controller.robots()[0].name()).mb();
-  auto mbc = controller.realRobot(controller.robots()[0].name()).mbc();
-  std::vector<sva::RBInertiad> I_st_(static_cast<size_t>(mb.nrBodies()));
-  std::vector<Eigen::Matrix6d> Id_st_(static_cast<size_t>(mb.nrBodies()));
-  std::vector<Eigen::Matrix6d> Xd_p_vec(static_cast<size_t>(mb.nrBodies()));
-  std::vector<Eigen::Matrix<double, 6, Eigen::Dynamic>> F_(static_cast<size_t>(mb.nrJoints()));
-  std::vector<Eigen::Matrix<double, 6, Eigen::Dynamic>> Fd_(static_cast<size_t>(mb.nrJoints()));
-  std::vector<int> dofPos_(static_cast<size_t>(mb.nrJoints()));
-
-  int dofP = 0;
-  for(int i = 0; i < mb.nrJoints(); ++i)
-  {
-    const auto ui = static_cast<size_t>(i);
-    F_[ui].resize(6, mb.joint(i).dof());
-    Fd_[ui].resize(6, mb.joint(i).dof());
-    dofPos_[ui] = dofP;
-    dofP += mb.joint(i).dof();
-  }
-
-  const std::vector<rbd::Body> & bodies = mb.bodies();
-  const std::vector<rbd::Joint> & joints = mb.joints();
-  const std::vector<int> & pred = mb.predecessors();
-
-  H.setZero(mb.nrDof(), mb.nrDof());
-  Hd.setZero(mb.nrDof(), mb.nrDof());
-  for(std::size_t i = 0; i < bodies.size(); ++i)
-  {
-    const auto ui = static_cast<size_t>(i);
-    const sva::PTransformd & X_p_i = mbc.parentToSon[ui];
-    Xd_p_vec[ui] = -sva::vector6ToCrossMatrix(mbc.jointVelocity[ui].vector()) * X_p_i.matrix();
-    I_st_[i] = bodies[i].inertia();
-    Id_st_[i].setZero();
-  }
-
-  for(int i = static_cast<int>(bodies.size()) - 1; i >= 0; --i)
-  {
-    const auto ui = static_cast<size_t>(i);
-    if(pred[ui] != -1)
-    {
-      const sva::PTransformd & X_p_i = mbc.parentToSon[ui];
-      Eigen::Matrix6d Xd_p_i = Xd_p_vec[ui];
-      I_st_[static_cast<size_t>(pred[ui])] += X_p_i.transMul(I_st_[ui]);
-      Id_st_[static_cast<size_t>(pred[ui])] += X_p_i.matrix().transpose() * Id_st_[ui] * X_p_i.matrix()
-                                               + Xd_p_i.transpose() * I_st_[ui].matrix() * X_p_i.matrix()
-                                               + X_p_i.matrix().transpose() * I_st_[ui].matrix() * Xd_p_i;
-    }
-
-    for(int dof = 0; dof < joints[ui].dof(); ++dof)
-    {
-      F_[ui].col(dof).noalias() = (I_st_[ui] * sva::MotionVecd(mbc.motionSubspace[ui].col(dof))).vector();
-      Fd_[ui].col(dof).noalias() = Id_st_[ui] * mbc.motionSubspace[ui].col(dof);
-    }
-
-    H.block(dofPos_[ui], dofPos_[ui], joints[ui].dof(), joints[ui].dof()).noalias() =
-        mbc.motionSubspace[ui].transpose() * F_[ui];
-    Hd.block(dofPos_[ui], dofPos_[ui], joints[ui].dof(), joints[ui].dof()).noalias() =
-        mbc.motionSubspace[ui].transpose() * Fd_[ui];
-
-    size_t j = ui;
-    while(pred[j] != -1)
-    {
-      const sva::PTransformd & X_p_j = mbc.parentToSon[j];
-      const Eigen::Matrix6d & Xd_p_j = Xd_p_vec[j];
-      for(int dof = 0; dof < joints[ui].dof(); ++dof)
-      {
-        F_[ui].col(dof) = X_p_j.transMul(sva::ForceVecd(F_[ui].col(dof))).vector();
-        Fd_[ui].col(dof) =
-            X_p_j.transMul(sva::ForceVecd(Fd_[ui].col(dof))).vector() + Xd_p_j.transpose() * F_[ui].col(dof);
-      }
-      j = static_cast<size_t>(pred[j]);
-
-      if(joints[j].dof() != 0)
-      {
-        H.block(dofPos_[ui], dofPos_[j], joints[ui].dof(), joints[j].dof()).noalias() =
-            F_[ui].transpose() * mbc.motionSubspace[j];
-        Hd.block(dofPos_[ui], dofPos_[j], joints[ui].dof(), joints[j].dof()).noalias() =
-            Fd_[ui].transpose() * mbc.motionSubspace[j];
-
-        H.block(dofPos_[j], dofPos_[ui], joints[j].dof(), joints[ui].dof()).noalias() =
-            H.block(dofPos_[ui], dofPos_[j], joints[ui].dof(), joints[j].dof()).transpose();
-        Hd.block(dofPos_[j], dofPos_[ui], joints[j].dof(), joints[ui].dof()).noalias() =
-            Hd.block(dofPos_[ui], dofPos_[j], joints[ui].dof(), joints[j].dof()).transpose();
-      }
-    }
-  }
-
-  H.noalias() = H;
-}
-
-void ExternalForcesEstimator::computeCHatPc0Hat(mc_control::MCGlobalController & controller,
-                                                const rbd::MultiBodyConfig & mbc)
-{
-  auto mb = controller.realRobot(controller.robots()[0].name()).mb();
-  c_hat = Eigen::VectorXd::Zero(mb.nrDof());
-  std::vector<sva::MotionVecd> acc_(static_cast<size_t>(mb.nrBodies()));
-  std::vector<sva::ForceVecd> f_(static_cast<size_t>(mb.nrBodies()));
-  std::vector<int> dofPos_(static_cast<size_t>(mb.nrJoints()));
-
-  int dofP = 0;
-  for(int i = 0; i < mb.nrJoints(); ++i)
-  {
-    const auto ui = static_cast<size_t>(i);
-    dofPos_[ui] = dofP;
-    dofP += mb.joint(i).dof();
-  }
-
-  const std::vector<rbd::Body> & bodies = mb.bodies();
-  const std::vector<rbd::Joint> & joints = mb.joints();
-  const std::vector<int> & pred = mb.predecessors();
-
-  sva::MotionVecd a_0(Eigen::Vector3d::Zero(), mbc.gravity);
-
-  for(std::size_t i = 0; i < bodies.size(); ++i)
-  {
-    const sva::PTransformd & X_p_i = mbc.parentToSon[i];
-
-    const sva::MotionVecd & vj_i = mbc.jointVelocity[i];
-
-    const sva::MotionVecd & vb_i = mbc.bodyVelB[i];
-
-    if(pred[i] != -1)
-      acc_[i] = X_p_i * acc_[static_cast<size_t>(pred[i])] + vb_i.cross(vj_i);
-    else
-      acc_[i] = X_p_i * a_0 + vb_i.cross(vj_i);
-
-    f_[i] = bodies[i].inertia() * acc_[i] + vb_i.crossDual(bodies[i].inertia() * vb_i);
-  }
-
-  for(int i = static_cast<int>(bodies.size()) - 1; i >= 0; --i)
-  {
-    const auto ui = static_cast<size_t>(i);
-    c_hat.segment(dofPos_[ui], joints[ui].dof()).noalias() = mbc.motionSubspace[ui].transpose() * f_[ui].vector();
-
-    if(pred[ui] != -1)
-    {
-      const sva::PTransformd & X_p_i = mbc.parentToSon[ui];
-      f_[static_cast<size_t>(pred[ui])] += X_p_i.transMul(f_[ui]);
-    }
-  }
-
-  // mc_rtc::log::info("C hat = {}", c_hat.transpose());
-}
-
 void ExternalForcesEstimator::addGui(mc_control::MCGlobalController & controller)
 {
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
 
-  ctl.controller().gui()->addElement({"Plugins", "External forces estimator"},
-                                     mc_rtc::gui::Checkbox("Is estimation feedback active", isActive),
-                                     mc_rtc::gui::Checkbox("Use force sensor", use_force_sensor_),
-                                     mc_rtc::gui::NumberInput("Gain", [this]() { return this->residualGain; },
-                                                              [this](double gain) { resetResidualGain(gain); }),
-                                     mc_rtc::gui::NumberInput(
-                                         "Residual speed gain", [this]() { return this->residualSpeedGain; },
-                                         [this](double gainSpeed)
-                                         {
-                                           if(gainSpeed != residualSpeedGain)
-                                           {
-                                             speedObserver_.integral.setZero();
-                                             speedObserver_.residual.setZero();
-                                           }
-                                           residualSpeedGain = gainSpeed;
-                                          }),
-                                     mc_rtc::gui::Label("nrDof", [this]() { return this->dofNumber; }));
+  ctl.controller().gui()->addElement(
+      {"Plugins", "External forces estimator"}, mc_rtc::gui::Checkbox("Is estimation feedback active", isActive),
+      mc_rtc::gui::Checkbox("Use force sensor", use_force_sensor_),
+      mc_rtc::gui::NumberInput(
+          "Gain", [this]() { return this->residualGain; }, [this](double gain) { resetResidualGain(gain); }),
+      mc_rtc::gui::NumberInput(
+          "Residual speed gain", [this]() { return this->residualSpeedGain; },
+          [this](double gainSpeed)
+          {
+            if(gainSpeed != residualSpeedGain)
+            {
+              speedObserver_.integral.setZero();
+              speedObserver_.residual.setZero();
+            }
+            residualSpeedGain = gainSpeed;
+          }),
+      mc_rtc::gui::Label("nrDof", [this]() { return this->dofNumber; }));
 
   if(backend_)
   {
