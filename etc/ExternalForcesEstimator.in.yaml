@@ -5,6 +5,7 @@
 # ft_sensor_name: none
 # use_force_sensor: false
 # torque_source_type: JointTorqueMeasurement
+# floating_base_mode: Decoupled
 # residual_speed_gain: 100
 #
 # # KinovaGen3
@@ -14,6 +15,7 @@
 # ft_sensor_name: EEForceSensor
 # use_force_sensor: true
 # torque_source_type: JointTorqueMeasurement
+# floating_base_mode: Decoupled
 # residual_speed_gain: 100
 
 # # H1
@@ -23,6 +25,7 @@
 # ft_sensor_name: none
 # use_force_sensor: false
 # torque_source_type: JointTorqueMeasurement
+# floating_base_mode: Decoupled
 # residual_speed_gain: 100
 
 # # HRP5
@@ -31,6 +34,7 @@
 # ft_sensor_name: RightHandForceSensor
 # use_force_sensor: true
 # torque_source_type: JointTorqueMeasurement
+# floating_base_mode: Decoupled
 # residual_speed_gain: 100
 
 # Default
@@ -40,4 +44,5 @@ verbose: false
 ft_sensor_name: ft_sensor
 use_force_sensor: true
 torque_source_type: JointTorqueMeasurement
+floating_base_mode: Decoupled
 residual_speed_gain: 100

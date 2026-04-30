@@ -26,6 +26,12 @@ enum TorqueSourceType
   JointTorqueMeasurement,
 };
 
+enum FloatingBaseMode
+{
+  FullGeneralized,
+  Decoupled,
+};
+
 namespace mc_plugin
 {
 
@@ -45,6 +51,20 @@ struct ExternalForcesEstimator : public mc_control::GlobalPlugin
 
   void computeForFixedBase(mc_control::MCGlobalController & controller);
   void computeForFloatingBase(mc_control::MCGlobalController & controller);
+  void computeForFloatingBaseFullGeneralized(mc_control::MCGlobalController & controller,
+                                             const mc_rbdyn::Robot & robot,
+                                             const mc_rbdyn::Robot & realRobot,
+                                             const rbd::MultiBodyConfig & mbc,
+                                             const Eigen::VectorXd & qdot,
+                                             const Eigen::VectorXd & tau,
+                                             const Eigen::MatrixXd & coriolisMatrix);
+  void computeForFloatingBaseDecoupled(mc_control::MCGlobalController & controller,
+                                       const mc_rbdyn::Robot & robot,
+                                       const mc_rbdyn::Robot & realRobot,
+                                       const rbd::MultiBodyConfig & mbc,
+                                       const Eigen::VectorXd & qdot,
+                                       const Eigen::VectorXd & tau,
+                                       const Eigen::MatrixXd & coriolisMatrix);
   void computeForwardDynamic(mc_control::MCGlobalController & controller);
   void computeCHatPc0Hat(mc_control::MCGlobalController & controller, const rbd::MultiBodyConfig & mbc);
   void addGui(mc_control::MCGlobalController & controller);
@@ -131,6 +151,7 @@ private:
   // Force sensor
   bool use_force_sensor_ = false;
   TorqueSourceType tau_mes_src_ = TorqueSourceType::JointTorqueMeasurement;
+  FloatingBaseMode floating_base_mode_ = FloatingBaseMode::Decoupled;
 
   std::string ft_sensor_name_;
 
