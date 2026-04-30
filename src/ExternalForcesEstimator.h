@@ -35,6 +35,8 @@ enum class FloatingBaseMode
 namespace mc_plugin
 {
 
+struct EstimatorBackend;
+
 struct ExternalForcesEstimator : public mc_control::GlobalPlugin
 {
   void init(mc_control::MCGlobalController & controller, const mc_rtc::Configuration & config) override;
@@ -51,20 +53,8 @@ struct ExternalForcesEstimator : public mc_control::GlobalPlugin
 
   void computeForFixedBase(mc_control::MCGlobalController & controller);
   void computeForFloatingBase(mc_control::MCGlobalController & controller);
-  void computeForFloatingBaseFullGeneralized(mc_control::MCGlobalController & controller,
-                                             const mc_rbdyn::Robot & robot,
-                                             const mc_rbdyn::Robot & realRobot,
-                                             const rbd::MultiBodyConfig & mbc,
-                                             const Eigen::VectorXd & qdot,
-                                             const Eigen::VectorXd & tau,
-                                             const Eigen::MatrixXd & coriolisMatrix);
-  void computeForFloatingBaseDecoupled(mc_control::MCGlobalController & controller,
-                                       const mc_rbdyn::Robot & robot,
-                                       const mc_rbdyn::Robot & realRobot,
-                                       const rbd::MultiBodyConfig & mbc,
-                                       const Eigen::VectorXd & qdot,
-                                       const Eigen::VectorXd & tau,
-                                       const Eigen::MatrixXd & coriolisMatrix);
+  void computeForFloatingBaseFullGeneralized(mc_control::MCGlobalController & controller);
+  void computeForFloatingBaseDecoupled(mc_control::MCGlobalController & controller);
   void computeForwardDynamic(mc_control::MCGlobalController & controller);
   void computeCHatPc0Hat(mc_control::MCGlobalController & controller, const rbd::MultiBodyConfig & mbc);
   void addGui(mc_control::MCGlobalController & controller);
@@ -125,22 +115,27 @@ private:
                                      int preservedPrefix) const;
   bool updatePluginActivation(mc_control::MCGlobalController & controller) const;
   void updateSpeedResidualDatastore(mc_control::MCGlobalController & controller);
-  void publishExternalTorqueState(mc_control::MCGlobalController & controller,
-                                  const mc_rbdyn::Robot & robot,
-                                  const mc_rbdyn::Robot & realRobot,
-                                  const Eigen::VectorXd & torques,
-                                  const Eigen::VectorXd & accelerations);
-  void clearExternalTorqueState(mc_control::MCGlobalController & controller,
+  /** Write the estimated external torques and equivalent accelerations to both control and real robots. */
+  void updateRobotExternalForces(mc_control::MCGlobalController & controller,
+                                 const mc_rbdyn::Robot & robot,
+                                 const mc_rbdyn::Robot & realRobot,
+                                 const Eigen::VectorXd & torques,
+                                 const Eigen::VectorXd & accelerations);
+  /** Clear the external torques and equivalent accelerations written by this estimator. */
+  void clearRobotExternalForces(mc_control::MCGlobalController & controller,
                                 const mc_rbdyn::Robot & realRobot) const;
-  void finalizeExternalTorqueComputation(mc_control::MCGlobalController & controller,
-                                         const mc_rbdyn::Robot & robot,
-                                         const mc_rbdyn::Robot & realRobot,
-                                         Eigen::VectorXd torques,
-                                         Eigen::VectorXd accelerations,
-                                         int preservedPrefix,
-                                         bool warnWhenInactive,
-                                         bool logPluginState);
+  /** Resolve plugin ownership and either update the robot with the estimate or clear the estimator contribution. */
+  void resolveAndUpdateRobot(mc_control::MCGlobalController & controller,
+                             const mc_rbdyn::Robot & robot,
+                             const mc_rbdyn::Robot & realRobot,
+                             Eigen::VectorXd torques,
+                             Eigen::VectorXd accelerations,
+                             int preservedPrefix,
+                             bool warnWhenInactive,
+                             bool logPluginState);
   void resetResidualGain(double gain);
+
+  std::unique_ptr<EstimatorBackend> backend_;
 
   std::vector<int> activeJointIndices; // A vector of the same size as the number of joints, with 1 for
                                        // estimated joints and 0 for non-estimated joints

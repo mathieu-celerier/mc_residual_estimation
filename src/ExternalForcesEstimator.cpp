@@ -254,6 +254,48 @@ Eigen::VectorXd sanitizeTorqueInput(const mc_rbdyn::Robot & sourceRobot,
 
 } // namespace
 
+struct EstimatorBackend
+{
+  virtual ~EstimatorBackend() = default;
+  virtual const char * name() const = 0;
+  virtual void run(ExternalForcesEstimator & estimator, mc_control::MCGlobalController & controller) = 0;
+};
+
+namespace
+{
+
+struct FixedBaseEstimatorBackend final : EstimatorBackend
+{
+  const char * name() const override { return "FixedBase"; }
+
+  void run(ExternalForcesEstimator & estimator, mc_control::MCGlobalController & controller) override
+  {
+    estimator.computeForFixedBase(controller);
+  }
+};
+
+struct FloatingBaseFullGeneralizedBackend final : EstimatorBackend
+{
+  const char * name() const override { return "FloatingBaseFullGeneralized"; }
+
+  void run(ExternalForcesEstimator & estimator, mc_control::MCGlobalController & controller) override
+  {
+    estimator.computeForFloatingBaseFullGeneralized(controller);
+  }
+};
+
+struct FloatingBaseDecoupledBackend final : EstimatorBackend
+{
+  const char * name() const override { return "FloatingBaseDecoupled"; }
+
+  void run(ExternalForcesEstimator & estimator, mc_control::MCGlobalController & controller) override
+  {
+    estimator.computeForFloatingBaseDecoupled(controller);
+  }
+};
+
+} // namespace
+
 ExternalForcesEstimator::~ExternalForcesEstimator() = default;
 
 void ExternalForcesEstimator::initializeActiveJoints(const mc_rbdyn::Robot & robot)
@@ -461,11 +503,11 @@ void ExternalForcesEstimator::updateSpeedResidualDatastore(mc_control::MCGlobalC
   }
 }
 
-void ExternalForcesEstimator::publishExternalTorqueState(mc_control::MCGlobalController & controller,
-                                                         const mc_rbdyn::Robot & robot,
-                                                         const mc_rbdyn::Robot & realRobot,
-                                                         const Eigen::VectorXd & torques,
-                                                         const Eigen::VectorXd & accelerations)
+void ExternalForcesEstimator::updateRobotExternalForces(mc_control::MCGlobalController & controller,
+                                                        const mc_rbdyn::Robot & robot,
+                                                        const mc_rbdyn::Robot & realRobot,
+                                                        const Eigen::VectorXd & torques,
+                                                        const Eigen::VectorXd & accelerations)
 {
   auto realExternalTorques = mapFullDofByJointName(robot, torques, realRobot, realRobot.mb().nrDof());
   auto realExternalAccelerations = mapFullDofByJointName(robot, accelerations, realRobot, realRobot.mb().nrDof());
@@ -476,7 +518,7 @@ void ExternalForcesEstimator::publishExternalTorqueState(mc_control::MCGlobalCon
   counter = 0;
 }
 
-void ExternalForcesEstimator::clearExternalTorqueState(mc_control::MCGlobalController & controller,
+void ExternalForcesEstimator::clearRobotExternalForces(mc_control::MCGlobalController & controller,
                                                        const mc_rbdyn::Robot & realRobot) const
 {
   Eigen::VectorXd zero = Eigen::VectorXd::Zero(dofNumber);
@@ -486,14 +528,14 @@ void ExternalForcesEstimator::clearExternalTorqueState(mc_control::MCGlobalContr
   controller.controller().realRobot().setExternalTorquesAcc(Eigen::VectorXd::Zero(realRobot.mb().nrDof()));
 }
 
-void ExternalForcesEstimator::finalizeExternalTorqueComputation(mc_control::MCGlobalController & controller,
-                                                                const mc_rbdyn::Robot & robot,
-                                                                const mc_rbdyn::Robot & realRobot,
-                                                                Eigen::VectorXd torques,
-                                                                Eigen::VectorXd accelerations,
-                                                                int preservedPrefix,
-                                                                bool warnWhenInactive,
-                                                                bool logPluginState)
+void ExternalForcesEstimator::resolveAndUpdateRobot(mc_control::MCGlobalController & controller,
+                                                    const mc_rbdyn::Robot & robot,
+                                                    const mc_rbdyn::Robot & realRobot,
+                                                    Eigen::VectorXd torques,
+                                                    Eigen::VectorXd accelerations,
+                                                    int preservedPrefix,
+                                                    bool warnWhenInactive,
+                                                    bool logPluginState)
 {
   zeroInactiveEntries(torques, activeJointIndices, preservedPrefix);
   zeroInactiveEntries(accelerations, activeJointIndices, preservedPrefix);
@@ -506,11 +548,11 @@ void ExternalForcesEstimator::finalizeExternalTorqueComputation(mc_control::MCGl
   const bool onePluginIsActive = updatePluginActivation(controller);
   if(isActive)
   {
-    publishExternalTorqueState(controller, robot, realRobot, torques, accelerations);
+    updateRobotExternalForces(controller, robot, realRobot, torques, accelerations);
   }
   else if(!onePluginIsActive)
   {
-    clearExternalTorqueState(controller, realRobot);
+    clearRobotExternalForces(controller, realRobot);
     if(warnWhenInactive && counter == 1)
     {
       mc_rtc::log::warning("External force feedback inactive");
@@ -549,6 +591,21 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
   jac = rbd::Jacobian(robot.mb(), referenceFrame);
   coriolis = std::make_unique<rbd::Coriolis>(robot.mb());
   forwardDynamics = rbd::ForwardDynamics(robot.mb());
+  if(robotIsFloatingBase)
+  {
+    if(floating_base_mode_ == FloatingBaseMode::FullGeneralized)
+    {
+      backend_ = std::make_unique<FloatingBaseFullGeneralizedBackend>();
+    }
+    else
+    {
+      backend_ = std::make_unique<FloatingBaseDecoupledBackend>();
+    }
+  }
+  else
+  {
+    backend_ = std::make_unique<FixedBaseEstimatorBackend>();
+  }
   initializeEstimatorState(robot, qdot);
 
   // Create datastore's entries to change modify parameters from code
@@ -564,6 +621,7 @@ void ExternalForcesEstimator::init(mc_control::MCGlobalController & controller, 
   addGui(controller);
   addLog(controller);
 
+  mc_rtc::log::info("[ExternalForcesEstimator][Init] selected backend = {}", backend_->name());
   mc_rtc::log::info("[ExternalForcesEstimator][Init] called with configuration:\n{}", config.dump(true, true));
 }
 
@@ -582,16 +640,7 @@ void ExternalForcesEstimator::before(mc_control::MCGlobalController & controller
     return;
   }
 
-  if(robotIsFloatingBase)
-  {
-    // mc_rtc::log::info("ExternalForcesEstimator::before: Floating base detected, using floating base dynamics");
-    computeForFloatingBase(controller);
-  }
-  else
-  {
-    // mc_rtc::log::info("ExternalForcesEstimator::before: Fixed base detected, using fixed base dynamics");
-    computeForFixedBase(controller);
-  }
+  backend_->run(*this, controller);
 
   // mc_rtc::log::info("[mc_residual] realRobot & = {}, realRobot.externalTorques = {}",
   //                   fmt::ptr(&controller.controller().realRobot()),
@@ -707,14 +756,17 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
 
   Eigen::VectorXd externalAccelerations = Eigen::VectorXd::Zero(dofNumber);
   externalAccelerations = forwardDynamics.H().ldlt().solve(forceFusion_.publishedTorques);
-  finalizeExternalTorqueComputation(ctl, robot, realRobot, forceFusion_.publishedTorques, externalAccelerations, 0, true,
-                                    true);
+  resolveAndUpdateRobot(ctl, robot, realRobot, forceFusion_.publishedTorques, externalAccelerations, 0, true, true);
 }
 
 void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalController & controller)
 {
-  auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
+  backend_->run(*this, controller);
+}
 
+void ExternalForcesEstimator::computeForFloatingBaseFullGeneralized(mc_control::MCGlobalController & controller)
+{
+  auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
   auto & robot = ctl.controller().robot();
   auto & realRobot = ctl.controller().realRobot(ctl.controller().robots()[0].name());
 
@@ -728,25 +780,6 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
   forwardDynamics.computeC(robot.mb(), mbc);
   forwardDynamics.computeH(robot.mb(), mbc);
   auto coriolisMatrix = coriolis->coriolis(robot.mb(), mbc);
-  if(floating_base_mode_ == FloatingBaseMode::FullGeneralized)
-  {
-    computeForFloatingBaseFullGeneralized(controller, robot, realRobot, mbc, qdot, tau, coriolisMatrix);
-  }
-  else
-  {
-    computeForFloatingBaseDecoupled(controller, robot, realRobot, mbc, qdot, tau, coriolisMatrix);
-  }
-}
-
-void ExternalForcesEstimator::computeForFloatingBaseFullGeneralized(mc_control::MCGlobalController & controller,
-                                                                    const mc_rbdyn::Robot & robot,
-                                                                    const mc_rbdyn::Robot & realRobot,
-                                                                    const rbd::MultiBodyConfig & mbc,
-                                                                    const Eigen::VectorXd & qdot,
-                                                                    const Eigen::VectorXd & tau,
-                                                                    const Eigen::MatrixXd & coriolisMatrix)
-{
-  auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
 
   const auto R = controller.robot().bodyPosW(robot.frame(referenceFrame).body()).rotation();
   const auto Hfull = forwardDynamics.H() - forwardDynamics.HIr();
@@ -780,19 +813,25 @@ void ExternalForcesEstimator::computeForFloatingBaseFullGeneralized(mc_control::
 
   forceFusion_.publishedTorques = residualObserver_.residualFull;
   Eigen::VectorXd externalAccelerations = Hfull.ldlt().solve(forceFusion_.publishedTorques);
-  finalizeExternalTorqueComputation(ctl, robot, realRobot, forceFusion_.publishedTorques, externalAccelerations, 6,
-                                    false, false);
+  resolveAndUpdateRobot(ctl, robot, realRobot, forceFusion_.publishedTorques, externalAccelerations, 6, false, false);
 }
 
-void ExternalForcesEstimator::computeForFloatingBaseDecoupled(mc_control::MCGlobalController & controller,
-                                                              const mc_rbdyn::Robot & robot,
-                                                              const mc_rbdyn::Robot & realRobot,
-                                                              const rbd::MultiBodyConfig & mbc,
-                                                              const Eigen::VectorXd & qdot,
-                                                              const Eigen::VectorXd & tau,
-                                                              const Eigen::MatrixXd & coriolisMatrix)
+void ExternalForcesEstimator::computeForFloatingBaseDecoupled(mc_control::MCGlobalController & controller)
 {
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
+  auto & robot = ctl.controller().robot();
+  auto & realRobot = ctl.controller().realRobot(ctl.controller().robots()[0].name());
+
+  Eigen::VectorXd qdot(dofNumber), tau(dofNumber);
+  auto mbc = prepareRuntimeInputs(robot, realRobot, 6, qdot, tau);
+  diagnostics_.alphas = qdot;
+  diagnostics_.inputTorque = tau;
+  diagnostics_.commandedAcceleration = rbd::dofToVector(robot.mb(), robot.alphaD());
+  zeroInactiveEntries(diagnostics_.commandedAcceleration, activeJointIndices, 6);
+
+  forwardDynamics.computeC(robot.mb(), mbc);
+  forwardDynamics.computeH(robot.mb(), mbc);
+  auto coriolisMatrix = coriolis->coriolis(robot.mb(), mbc);
 
   Eigen::VectorXd tau_joint(actuatedDofNumber);
   tau_joint.setZero();
@@ -888,8 +927,7 @@ void ExternalForcesEstimator::computeForFloatingBaseDecoupled(mc_control::MCGlob
 
   forceFusion_.publishedTorques = residual;
   Eigen::VectorXd externalAccelerations = H.ldlt().solve(forceFusion_.publishedTorques);
-  finalizeExternalTorqueComputation(ctl, robot, realRobot, forceFusion_.publishedTorques, externalAccelerations, 6,
-                                    false, false);
+  resolveAndUpdateRobot(ctl, robot, realRobot, forceFusion_.publishedTorques, externalAccelerations, 6, false, false);
 }
 
 void ExternalForcesEstimator::computeForwardDynamic(mc_control::MCGlobalController & controller)
