@@ -18,7 +18,7 @@
 
 #include <mc_tvm/Robot.h>
 
-enum TorqueSourceType
+enum class TorqueSourceType
 {
   CommandedTorque,
   CurrentMeasurement,
@@ -26,7 +26,7 @@ enum TorqueSourceType
   JointTorqueMeasurement,
 };
 
-enum FloatingBaseMode
+enum class FloatingBaseMode
 {
   FullGeneralized,
   Decoupled,
@@ -72,6 +72,46 @@ struct ExternalForcesEstimator : public mc_control::GlobalPlugin
   void removeLog(mc_control::MCGlobalController & controller);
 
 private:
+  struct ResidualObserverState
+  {
+    Eigen::VectorXd integralFull;
+    Eigen::VectorXd residualFull;
+    Eigen::VectorXd integralJoint;
+    Eigen::VectorXd jointResidual;
+    Eigen::VectorXd integralBase;
+    Eigen::VectorXd baseResidual;
+    Eigen::VectorXd rotorInertiaResidual;
+    Eigen::VectorXd rotorInertiaIntegral;
+  };
+
+  struct ForceFusionState
+  {
+    Eigen::VectorXd sensorTorques;
+    Eigen::VectorXd filteredSensorTorques;
+    Eigen::VectorXd fusedTorques;
+    Eigen::VectorXd publishedTorques;
+    Eigen::VectorXd filteredPublishedTorques;
+    sva::ForceVecd fusedWrench = sva::ForceVecd::Zero();
+    sva::ForceVecd residualWrench = sva::ForceVecd::Zero();
+    sva::ForceVecd unfilteredWrench = sva::ForceVecd::Zero();
+    sva::ForceVecd filteredSensorWrench = sva::ForceVecd::Zero();
+    Eigen::Vector6d sensorWrench = Eigen::Vector6d::Zero();
+  };
+
+  struct SpeedObserverState
+  {
+    Eigen::VectorXd residual;
+    Eigen::VectorXd integral;
+  };
+
+  struct RuntimeDiagnostics
+  {
+    Eigen::VectorXd alphas;
+    Eigen::VectorXd gravity;
+    Eigen::VectorXd inputTorque;
+    Eigen::VectorXd commandedAcceleration;
+  };
+
   void initializeActiveJoints(const mc_rbdyn::Robot & robot);
   void loadConfiguration(const mc_rtc::Configuration & config);
   void initializeEstimatorState(const mc_rbdyn::Robot & robot, const Eigen::VectorXd & qdot);
@@ -113,7 +153,7 @@ private:
   bool verbose = false;
   bool isActive = true;
 
-  double residualGains = 0.0;
+  double residualGain = 0.0;
   std::string referenceFrame;
 
   rbd::Jacobian jac;
@@ -121,31 +161,11 @@ private:
   rbd::ForwardDynamics forwardDynamics;
 
   Eigen::VectorXd pzero;
-
-  Eigen::VectorXd integralTermNormal;
-  Eigen::VectorXd residualNormal;
-
-  Eigen::VectorXd integralTermIntern;
-  Eigen::VectorXd internResidual;
-  Eigen::VectorXd integralTermExtern;
-  Eigen::VectorXd externResidual;
-  Eigen::VectorXd residualWithRotorInertia;
-  Eigen::VectorXd integralTermWithRotorInertia;
-
-  Eigen::VectorXd FTSensorTorques;
-  Eigen::VectorXd filteredFTSensorTorques;
-  Eigen::VectorXd newExternalTorques;
-  Eigen::VectorXd externalTorques;
-  Eigen::VectorXd filteredExternalTorques;
-  sva::ForceVecd externalForces;
-  sva::ForceVecd externalForcesResidual;
-  sva::ForceVecd newExternalForces;
-  sva::ForceVecd filteredFTSensorForces;
-  Eigen::Vector6d externalForcesFT;
+  ResidualObserverState residualObserver_;
+  ForceFusionState forceFusion_;
 
   // Used for collision avoidance observer, not for the control
-  Eigen::VectorXd residualSpeed;
-  Eigen::VectorXd integralTermSpeed;
+  SpeedObserverState speedObserver_;
   double residualSpeedGain;
 
   // Force sensor
@@ -167,12 +187,7 @@ private:
   Eigen::MatrixXd Ic0d;
 
   Eigen::VectorXd c_hat;
-
-  // Logging
-  Eigen::VectorXd alphas;
-  Eigen::VectorXd gravity;
-  Eigen::VectorXd inputTorque;
-  Eigen::VectorXd commandedAcceleration;
+  RuntimeDiagnostics diagnostics_;
 };
 
 } // namespace mc_plugin
