@@ -42,6 +42,7 @@ jobs:
       run: |
         brew tap mc-rtc/mc-rtc
         brew trust mc-rtc/mc-rtc
+        echo "CMAKE_POLICY_VERSION_MINIMUM=3.5" >> $GITHUB_ENV
     - name: Install dependencies
       uses: jrl-umi3218/github-actions/install-dependencies@master
       with:
