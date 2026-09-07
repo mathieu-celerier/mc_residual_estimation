@@ -14,13 +14,13 @@ on:
 jobs:
 
   clang-format:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v2
-    - name: Install clang-format-10
+    - name: Install clang-format
       run: |
         sudo apt-get -qq update
-        sudo apt-get -qq install clang-format-10
+        sudo apt-get -qq install clang-format
     - name: Run clang-format-check
       run: |
         ./.clang-format-check.sh
@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-18.04, ubuntu-20.04, macos-latest, windows-latest]
+        os: [ubuntu-22.04, macos-latest, windows-latest]
         build-type: [RelWithDebInfo]
         compiler: [gcc]
     runs-on: ${{ matrix.os }}
@@ -37,6 +37,11 @@ jobs:
     - uses: actions/checkout@v2
       with:
         submodules: recursive
+    - name: Trust mc-rtc Homebrew tap
+      if: runner.os == 'macOS'
+      run: |
+        brew tap mc-rtc/mc-rtc
+        brew trust mc-rtc/mc-rtc
     - name: Install dependencies
       uses: jrl-umi3218/github-actions/install-dependencies@master
       with:
