@@ -534,7 +534,12 @@ void ExternalForcesEstimator::computeForFixedBase(mc_control::MCGlobalController
 
   if(isActive)
   {
-    extTorquePlugin.push_back("ResidualEstimator");
+    // Registered once: pushed every tick, the list grew by 1000 entries per
+    // second and slowed down the control loop over time
+    if(std::find(extTorquePlugin.begin(), extTorquePlugin.end(), "ResidualEstimator") == extTorquePlugin.end())
+    {
+      extTorquePlugin.push_back("ResidualEstimator");
+    }
   }
   else
   {
@@ -809,7 +814,12 @@ void ExternalForcesEstimator::computeForFloatingBase(mc_control::MCGlobalControl
 
   if(isActive)
   {
-    extTorquePlugin.push_back("ResidualEstimator");
+    // Registered once: pushed every tick, the list grew by 1000 entries per
+    // second and slowed down the control loop over time
+    if(std::find(extTorquePlugin.begin(), extTorquePlugin.end(), "ResidualEstimator") == extTorquePlugin.end())
+    {
+      extTorquePlugin.push_back("ResidualEstimator");
+    }
   }
   else
   {
